@@ -1,0 +1,1377 @@
+﻿<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Offline PDF Editor</title>
+<script src="lib/pdf.min.js"></script>
+<script src="lib/pdf-lib.min.js"></script>
+<style>
+/* ===== Reset & Base ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1e1e1e; color: #d4d4d4; height: 100vh; display: flex; flex-direction: column; overflow: hidden; user-select: none; }
+button { cursor: pointer; border: none; background: none; color: inherit; font: inherit; }
+input[type=range] { cursor: pointer; accent-color: #0e7fd0; }
+
+/* ===== Ribbon Toolbar ===== */
+#ribbon { background: #2d2d2d; border-bottom: 1px solid #3c3c3c; flex-shrink: 0; }
+#ribbon-tabs { display: flex; padding: 0 8px; }
+.ribbon-tab { padding: 6px 14px; font-size: 12px; border-bottom: 2px solid transparent; cursor: pointer; color: #aaa; }
+.ribbon-tab.active { color: #fff; border-color: #0e7fd0; }
+.ribbon-panels { display: none; padding: 4px 8px 6px; gap: 16px; align-items: center; flex-wrap: wrap; }
+.ribbon-panels.active { display: flex; }
+.ribbon-group { display: flex; align-items: center; gap: 4px; padding-right: 12px; border-right: 1px solid #3c3c3c; }
+.ribbon-group:last-child { border-right: none; }
+.ribbon-group label { font-size: 11px; color: #888; margin-right: 2px; white-space: nowrap; }
+.rbtn { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 8px; border-radius: 4px; font-size: 10px; color: #ccc; min-width: 40px; white-space: nowrap; }
+.rbtn:hover { background: #3a3a3a; }
+.rbtn.active { background: #0e4e7d; color: #fff; }
+.rbtn svg { width: 18px; height: 18px; }
+.rbtn-sm { padding: 4px 8px; border-radius: 4px; font-size: 12px; height: 26px; }
+.rbtn-sm:hover { background: #3a3a3a; }
+.rbtn-sm.active { background: #0e4e7d; color: #fff; }
+
+/* ===== Status Bar ===== */
+#statusbar { background: #007acc; color: #fff; font-size: 11px; padding: 2px 12px; display: flex; gap: 20px; flex-shrink: 0; }
+#statusbar span { opacity: 0.9; }
+
+/* ===== Main Layout ===== */
+#main { display: flex; flex: 1; overflow: hidden; }
+
+/* ===== Sidebar ===== */
+#sidebar { width: 200px; background: #252526; border-right: 1px solid #3c3c3c; display: flex; flex-direction: column; flex-shrink: 0; }
+#sidebar-tabs { display: flex; border-bottom: 1px solid #3c3c3c; }
+.stab { flex: 1; padding: 6px 4px; font-size: 11px; text-align: center; cursor: pointer; color: #888; border-bottom: 2px solid transparent; }
+.stab.active { color: #fff; border-color: #0e7fd0; }
+.sidebar-panel { display: none; flex: 1; overflow-y: auto; padding: 4px; }
+.sidebar-panel.active { display: block; }
+
+/* Thumbnail List */
+#thumb-list { display: flex; flex-direction: column; gap: 6px; }
+.thumb-item { display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; padding: 4px; border-radius: 4px; border: 2px solid transparent; }
+.thumb-item:hover { background: #2d2d2d; }
+.thumb-item.selected { border-color: #0e7fd0; }
+.thumb-item canvas { max-width: 160px; border: 1px solid #555; display: block; }
+.thumb-item span { font-size: 10px; color: #888; }
+
+/* Bookmarks */
+#bookmark-list { display: flex; flex-direction: column; gap: 2px; }
+.bk-item { padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 3px; }
+.bk-item:hover { background: #2d2d2d; }
+
+/* ===== Viewer ===== */
+#viewer-wrap { flex: 1; overflow: auto; background: #3c3c3c; display: flex; flex-direction: column; align-items: center; padding: 20px; gap: 16px; position: relative; }
+.page-wrap { position: relative; display: inline-block; box-shadow: 0 4px 20px rgba(0,0,0,0.5); background: #fff; }
+.page-wrap canvas.pdf-canvas { display: block; }
+.page-wrap canvas.ann-canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
+
+/* Drop overlay */
+#drop-overlay { display: none; position: fixed; inset: 0; background: rgba(14,127,208,0.25); border: 4px dashed #0e7fd0; z-index: 200; align-items: center; justify-content: center; font-size: 32px; color: #fff; pointer-events: none; }
+#drop-overlay.active { display: flex; }
+
+/* ===== Dialogs ===== */
+.dialog-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 300; align-items: center; justify-content: center; }
+.dialog-backdrop.active { display: flex; }
+.dialog { background: #2d2d2d; border: 1px solid #555; border-radius: 8px; padding: 20px; min-width: 340px; max-width: 500px; }
+.dialog h3 { margin-bottom: 14px; font-size: 15px; }
+.dialog label { display: block; font-size: 12px; color: #aaa; margin-bottom: 4px; }
+.dialog input, .dialog select, .dialog textarea { width: 100%; background: #1e1e1e; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; padding: 6px 8px; font-size: 13px; margin-bottom: 12px; }
+.dialog textarea { min-height: 60px; resize: vertical; }
+.dialog-buttons { display: flex; gap: 8px; justify-content: flex-end; }
+.btn-primary { background: #0e7fd0; color: #fff; border-radius: 4px; padding: 6px 16px; font-size: 13px; }
+.btn-primary:hover { background: #1090e0; }
+.btn-cancel { background: #444; color: #d4d4d4; border-radius: 4px; padding: 6px 16px; font-size: 13px; }
+.btn-cancel:hover { background: #555; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #1e1e1e; }
+::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+
+/* Annotation text labels */
+.ann-label { position: absolute; pointer-events: none; font-size: 13px; padding: 2px 4px; max-width: 220px; word-break: break-all; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+
+<!-- Drop overlay -->
+<div id="drop-overlay">?�曳 PDF 檔�??�此?��?</div>
+
+<!-- Ribbon -->
+<div id="ribbon">
+  <div id="ribbon-tabs">
+    <div class="ribbon-tab active" data-panel="panel-home">首�?</div>
+    <div class="ribbon-tab" data-panel="panel-edit">編輯</div>
+    <div class="ribbon-tab" data-panel="panel-annot">註解</div>
+    <div class="ribbon-tab" data-panel="panel-page">?�面</div>
+    <div class="ribbon-tab" data-panel="panel-view">檢�?</div>
+  </div>
+  <!-- 首�? -->
+  <div id="panel-home" class="ribbon-panels active">
+    <div class="ribbon-group">
+      <button class="rbtn" onclick="openFile()" title="?��? PDF (Ctrl+O)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+        ?��?
+      </button>
+      <button class="rbtn" onclick="saveFile()" title="下�? PDF (Ctrl+S)" id="btn-save">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        下�?
+      </button>
+      <button class="rbtn" onclick="printPdf()" title="?�印 (Ctrl+P)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        ?�印
+      </button>
+    </div>
+    <div class="ribbon-group">
+      <button class="rbtn" onclick="undo()" title="復�? (Ctrl+Z)" id="btn-undo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13"/></svg>
+        復�?
+      </button>
+      <button class="rbtn" onclick="redo()" title="?��?復�? (Ctrl+Y)" id="btn-redo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 019-9 9 9 0 016 2.3L21 13"/></svg>
+        ?��?
+      </button>
+    </div>
+    <div class="ribbon-group">
+      <label>縮放</label>
+      <button class="rbtn-sm" onclick="zoom(-0.25)" title="Zoom Out (Ctrl+-)">-</button>
+      <span id="zoom-label" style="font-size:12px;min-width:40px;text-align:center">100%</span>
+      <button class="rbtn-sm" onclick="zoom(+0.25)" title="Zoom In (Ctrl++)">+</button>
+      <button class="rbtn-sm" onclick="fitPage()" title="?��??�面 (Ctrl+0)">?��?</button>
+    </div>
+    <div class="ribbon-group">
+      <button class="rbtn-sm" onclick="prevPage()" title="Previous Page">Prev</button>
+      <span id="page-label" style="font-size:12px;padding:0 4px">-</span>
+      <button class="rbtn-sm" onclick="nextPage()" title="Next Page">Next</button>
+    </div>
+  </div>
+  <!-- 編輯 -->
+  <div id="panel-edit" class="ribbon-panels">
+    <div class="ribbon-group">
+      <button class="rbtn" onclick="copyPageText()" title="複製?��??�面?��?">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        複製?��?
+      </button>
+    </div>
+    <div class="ribbon-group">
+      <label>浮水?��?字�?</label>
+      <input type="text" id="wm-text" value="機�??�件" style="width:110px;background:#1e1e1e;border:1px solid #555;border-radius:4px;color:#d4d4d4;padding:3px 6px;font-size:12px">
+      <button class="rbtn-sm" onclick="addWatermark()">Add Watermark</button>
+    </div>
+  </div>
+  <!-- 註解 -->
+  <div id="panel-annot" class="ribbon-panels">
+    <div class="ribbon-group">
+      <label>工具</label>
+      <button class="rbtn tool-btn" id="tool-none" onclick="setTool('none')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-7 1-4 7z"/></svg>
+        ?��?
+      </button>
+      <button class="rbtn tool-btn" id="tool-text" onclick="setTool('text')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+        ?��?
+      </button>
+      <button class="rbtn tool-btn" id="tool-rect" onclick="setTool('rect')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+        ?�形
+      </button>
+      <button class="rbtn tool-btn" id="tool-ellipse" onclick="setTool('ellipse')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="12" rx="10" ry="6"/></svg>
+        橢�?
+      </button>
+      <button class="rbtn tool-btn" id="tool-arrow" onclick="setTool('arrow')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="11 5 19 5 19 13"/></svg>
+        箭頭
+      </button>
+      <button class="rbtn tool-btn" id="tool-freehand" onclick="setTool('freehand')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17c3-3 6-5 9-5s6 2 9-1"/></svg>
+        ?�繪
+      </button>
+      <button class="rbtn tool-btn" id="tool-highlight" onclick="setTool('highlight')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="13" width="18" height="5" rx="1" fill="#ff0" stroke="#cc0"/><line x1="9" y1="13" x2="9" y2="6"/><line x1="15" y1="13" x2="15" y2="6"/></svg>
+        ?��?�?      </button>
+    </div>
+    <div class="ribbon-group">
+      <label>筆色</label>
+      <input type="color" id="ann-color" value="#ff0000" style="width:36px;height:28px;border:none;background:none;cursor:pointer">
+      <label>粗細</label>
+      <input type="range" id="ann-width" min="1" max="12" value="2" style="width:60px">
+    </div>
+    <div class="ribbon-group">
+      <button class="rbtn" onclick="showStampDialog()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="13" width="16" height="5" rx="1"/><path d="M8 13V9a4 4 0 018 0v4"/></svg>
+        ?��?
+      </button>
+      <button class="rbtn" onclick="loadSignature()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+        載入簽�?
+      </button>
+      <button class="rbtn tool-btn" id="tool-signature" onclick="setTool('signature')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17c2-2 4-3 6-2s3 3 6 1 4-4 6-2"/></svg>
+        ?�置簽�?
+      </button>
+    </div>
+    <div class="ribbon-group">
+      <button class="rbtn" onclick="deleteSelectedAnn()" title="Delete">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+        ?�除
+      </button>
+    </div>
+  </div>
+  <!-- ?�面 -->
+  <div id="panel-page" class="ribbon-panels">
+    <div class="ribbon-group">
+      <button class="rbtn" onclick="rotatePage(90)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15 6.7L3 16"/></svg>
+        ?��? 90°
+      </button>
+      <button class="rbtn" onclick="rotatePage(-90)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 2v6h6"/><path d="M21 12a9 9 0 00-15-6.7L3 8"/><path d="M21 22v-6h-6"/><path d="M3 12a9 9 0 0015 6.7L21 16"/></svg>
+        左�? 90°
+      </button>
+    </div>
+    <div class="ribbon-group">
+      <button class="rbtn" onclick="deletePage()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
+        ?�除??      </button>
+      <button class="rbtn" onclick="showInsertBlankDialog()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        ?�入空白??      </button>
+      <button class="rbtn" onclick="movePage(-1)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+        上移
+      </button>
+      <button class="rbtn" onclick="movePage(1)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+        下移
+      </button>
+    </div>
+    <div class="ribbon-group">
+      <button class="rbtn" onclick="showMergeDialog()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6H3v12h5M16 6h5v12h-5"/><line x1="12" y1="12" x2="16" y2="12"/><line x1="8" y1="12" x2="12" y2="12"/></svg>
+        ?�併 PDF
+      </button>
+      <button class="rbtn" onclick="showSplitDialog()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="3" x2="12" y2="21"/><path d="M3 9l9-7 9 7"/><path d="M3 15l9 7 9-7"/></svg>
+        ?�割 PDF
+      </button>
+      <button class="rbtn" onclick="showExtractDialog()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0018 9h-1.26A8 8 0 103 16.29"/></svg>
+        ?��??�面
+      </button>
+    </div>
+  </div>
+  <!-- 檢�? -->
+  <div id="panel-view" class="ribbon-panels">
+    <div class="ribbon-group">
+      <label>Sidebar</label>
+      <button class="rbtn-sm" onclick="toggleSidebar()">?��?</button>
+    </div>
+    <div class="ribbon-group">
+      <label>?�面?��?</label>
+      <button class="rbtn-sm" onclick="scrollToPage(currentPage)">定�?</button>
+    </div>
+  </div>
+</div>
+
+<!-- Status Bar -->
+<div id="statusbar">
+  <span id="sb-file">No file</span>
+  <span id="sb-page">Page 0</span>
+  <span id="sb-size">-</span>
+  <span id="sb-ann">註解�?</span>
+</div>
+
+<!-- Main -->
+<div id="main">
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div id="sidebar-tabs">
+      <div class="stab active" data-spanel="thumb-panel">縮�?</div>
+      <div class="stab" data-spanel="bk-panel">?�籤</div>
+    </div>
+    <div id="thumb-panel" class="sidebar-panel active">
+      <div id="thumb-list"></div>
+    </div>
+    <div id="bk-panel" class="sidebar-panel">
+      <div id="bookmark-list"><span style="font-size:11px;color:#666;padding:8px;display:block">No bookmarks</span></div>
+    </div>
+  </div>
+  <!-- Viewer -->
+  <div id="viewer-wrap" ondragover="onDragOver(event)" ondrop="onDrop(event)" ondragleave="onDragLeave(event)">
+    <div id="viewer-pages"></div>
+  </div>
+</div>
+
+<!-- ===== Dialogs ===== -->
+<div class="dialog-backdrop" id="dlg-stamp">
+  <div class="dialog">
+    <h3>?�入?��?</h3>
+    <label>?��??��?</label>
+    <input type="text" id="stamp-text" value="STAMP">
+    <label>顏色</label>
+    <input type="color" id="stamp-color" value="#cc0000">
+    <div class="dialog-buttons">
+      <button class="btn-cancel" onclick="closeDialog('dlg-stamp')">?��?</button>
+      <button class="btn-primary" onclick="confirmStamp()">套用</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-backdrop" id="dlg-merge">
+  <div class="dialog">
+    <h3>?�併 PDF</h3>
+    <label>Select one or more PDF files to merge.</label>
+    <input type="file" id="merge-files" multiple accept=".pdf" style="margin-bottom:12px">
+    <div class="dialog-buttons">
+      <button class="btn-cancel" onclick="closeDialog('dlg-merge')">?��?</button>
+      <button class="btn-primary" onclick="confirmMerge()">?�併</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-backdrop" id="dlg-split">
+  <div class="dialog">
+    <h3>?�割 PDF</h3>
+    <label>Pages per split file</label>
+    <input type="number" id="split-n" value="1" min="1">
+    <p style="font-size:11px;color:#888;margin-bottom:12px">Each output PDF will contain the number of pages above.</p>
+    <div class="dialog-buttons">
+      <button class="btn-cancel" onclick="closeDialog('dlg-split')">?��?</button>
+      <button class="btn-primary" onclick="confirmSplit()">?�割</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-backdrop" id="dlg-extract">
+  <div class="dialog">
+    <h3>?��??�面</h3>
+    <label>Page range (e.g. 1,3,5-8)</label>
+    <input type="text" id="extract-range" placeholder="1-z 表示?�部">
+    <div class="dialog-buttons">
+      <button class="btn-cancel" onclick="closeDialog('dlg-extract')">?��?</button>
+      <button class="btn-primary" onclick="confirmExtract()">Extract</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-backdrop" id="dlg-insert">
+  <div class="dialog">
+    <h3>Insert Blank Page</h3>
+    <label>位置</label>
+    <select id="insert-pos">
+      <option value="before">Before current page</option>
+      <option value="after" selected>After current page</option>
+      <option value="end">?�件?�尾</option>
+    </select>
+    <label>尺寸</label>
+    <select id="insert-size">
+      <option value="a4">A4 (595 ? 842 pt)</option>
+      <option value="letter">Letter (612 ? 792 pt)</option>
+    </select>
+    <div class="dialog-buttons">
+      <button class="btn-cancel" onclick="closeDialog('dlg-insert')">?��?</button>
+      <button class="btn-primary" onclick="confirmInsertBlank()">?�入</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-backdrop" id="dlg-text">
+  <div class="dialog">
+    <h3>輸入?��?</h3>
+    <textarea id="ann-text-input" rows="3" placeholder="輸入?��?..."></textarea>
+    <div class="dialog-buttons">
+      <button class="btn-cancel" onclick="closeDialog('dlg-text')">?��?</button>
+      <button class="btn-primary" onclick="confirmText()">確�?</button>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="file-input" accept=".pdf" style="display:none" onchange="onFileInputChange(event)">
+<input type="file" id="sig-input" accept="image/*" style="display:none" onchange="onSigLoad(event)">
+
+<script>
+// ============================================================
+//  STATE
+// ============================================================
+let pdfDoc = null;          // PDF.js doc (for rendering)
+let pdfLibDoc = null;       // pdf-lib doc (for editing)
+let currentPage = 1;
+let totalPages = 0;
+let scale = 1.5;
+let fileName = '';
+let undoStack = [];
+let redoStack = [];
+let annotations = {};       // { pageNum: [ annObj, ... ] }
+let activeTool = 'none';
+let sigImage = null;        // { dataUrl, img }
+let pendingTextPos = null;  // { pageNum, x, y }
+let pendingStamp = null;
+
+// Drawing state
+let isDrawing = false;
+let drawStart = null;
+let freehandPoints = [];
+let selectedAnn = null;     // { pageNum, idx }
+let stampPending = false;
+
+// Page rotation cache (index = 0-based)
+let pageRotations = {};
+
+// ============================================================
+//  RIBBON / SIDEBAR TABS
+// ============================================================
+document.querySelectorAll('.ribbon-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.ribbon-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.ribbon-panels').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.panel).classList.add('active');
+  });
+});
+
+document.querySelectorAll('.stab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.stab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.spanel).classList.add('active');
+  });
+});
+
+// ============================================================
+//  FILE OPEN
+// ============================================================
+function openFile() { document.getElementById('file-input').click(); }
+
+async function onFileInputChange(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  await loadPdfFile(file);
+}
+
+async function loadPdfFile(file) {
+  try {
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    assertPdfLikeBytes(bytes, file.name);
+    await loadPdfBytes(bytes, file.name);
+  } catch(ex) {
+    alert(`�L�k�}�� PDF�G${ex.message}`);
+  }
+}
+
+function assertPdfLikeBytes(bytes, name = 'document.pdf') {
+  if (!bytes || !bytes.length) {
+    throw new Error(`${name} �O���ɮסC`);
+  }
+
+  // Per PDF spec, header should appear within the first 1024 bytes.
+  const maxProbe = Math.min(bytes.length - 5, 1024);
+  let found = false;
+  for (let i = 0; i <= maxProbe; i++) {
+    if (
+      bytes[i] === 0x25 && // %
+      bytes[i + 1] === 0x50 && // P
+      bytes[i + 2] === 0x44 && // D
+      bytes[i + 3] === 0x46 && // F
+      bytes[i + 4] === 0x2D // -
+    ) {
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    throw new Error(`${name} ���e���O���� PDF�]�䤣�� %PDF- ���Y�^�C`);
+  }
+}
+
+async function loadPdfBytes(bytes, name) {
+  if (!(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes);
+  assertPdfLikeBytes(bytes, name || 'document.pdf');
+
+  fileName = name || 'document.pdf';
+  annotations = {};
+  pageRotations = {};
+  undoStack = [];
+  redoStack = [];
+  selectedAnn = null;
+
+  // Load with PDF.js
+  const loadingTask = pdfjsLib.getDocument({ data: bytes });
+  pdfDoc = await loadingTask.promise;
+  totalPages = pdfDoc.numPages;
+
+  // Load with pdf-lib
+  pdfLibDoc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
+
+  currentPage = 1;
+  updateStatus();
+  await renderAllPages();
+  await renderThumbnails();
+  renderBookmarks();
+  saveSnapshot();
+}
+
+// ============================================================
+//  RENDER
+// ============================================================
+async function renderAllPages() {
+  const container = document.getElementById('viewer-pages');
+  container.innerHTML = '';
+
+  for (let p = 1; p <= totalPages; p++) {
+    const wrap = document.createElement('div');
+    wrap.className = 'page-wrap';
+    wrap.dataset.page = p;
+
+    const pdfCanvas = document.createElement('canvas');
+    pdfCanvas.className = 'pdf-canvas';
+
+    const annCanvas = document.createElement('canvas');
+    annCanvas.className = 'ann-canvas';
+
+    wrap.appendChild(pdfCanvas);
+    wrap.appendChild(annCanvas);
+    container.appendChild(wrap);
+
+    await renderPage(p, pdfCanvas, annCanvas);
+    attachCanvasEvents(annCanvas, p);
+  }
+}
+
+async function renderPage(pageNum, pdfCanvas, annCanvas) {
+  const page = await pdfDoc.getPage(pageNum);
+  const rot = pageRotations[pageNum - 1] || 0;
+  const viewport = page.getViewport({ scale, rotation: rot });
+
+  pdfCanvas.width = viewport.width;
+  pdfCanvas.height = viewport.height;
+  annCanvas.width = viewport.width;
+  annCanvas.height = viewport.height;
+
+  const ctx = pdfCanvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+
+  redrawAnnotations(pageNum, annCanvas);
+}
+
+async function rerenderPage(pageNum) {
+  const wrap = document.querySelector(`.page-wrap[data-page="${pageNum}"]`);
+  if (!wrap) return;
+  const pdfCanvas = wrap.querySelector('.pdf-canvas');
+  const annCanvas = wrap.querySelector('.ann-canvas');
+  await renderPage(pageNum, pdfCanvas, annCanvas);
+}
+
+function redrawAnnotations(pageNum, annCanvas) {
+  const ctx = annCanvas.getContext('2d');
+  ctx.clearRect(0, 0, annCanvas.width, annCanvas.height);
+  // Remove old text labels
+  const wrap = annCanvas.parentElement;
+  wrap.querySelectorAll('.ann-label').forEach(el => el.remove());
+
+  const anns = annotations[pageNum] || [];
+  anns.forEach((ann, idx) => {
+    const sel = selectedAnn && selectedAnn.pageNum === pageNum && selectedAnn.idx === idx;
+    drawAnnotation(ctx, ann, sel, annCanvas, wrap, idx);
+  });
+}
+
+function drawAnnotation(ctx, ann, selected, annCanvas, wrap, idx) {
+  ctx.save();
+  ctx.strokeStyle = ann.color || '#ff0000';
+  ctx.fillStyle = ann.color || '#ff0000';
+  ctx.lineWidth = ann.lineWidth || 2;
+  ctx.globalAlpha = ann.opacity !== undefined ? ann.opacity : 1;
+
+  if (selected) {
+    ctx.shadowColor = '#0e7fd0';
+    ctx.shadowBlur = 6;
+  }
+
+  switch (ann.type) {
+    case 'rect':
+      ctx.strokeRect(ann.x, ann.y, ann.w, ann.h);
+      break;
+    case 'ellipse':
+      ctx.beginPath();
+      ctx.ellipse(ann.x + ann.w/2, ann.y + ann.h/2, Math.abs(ann.w/2), Math.abs(ann.h/2), 0, 0, 2*Math.PI);
+      ctx.stroke();
+      break;
+    case 'arrow': {
+      const ax = ann.x, ay = ann.y, bx = ann.x + ann.w, by = ann.y + ann.h;
+      const angle = Math.atan2(by - ay, bx - ax);
+      const headLen = 14;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx - headLen * Math.cos(angle - 0.4), by - headLen * Math.sin(angle - 0.4));
+      ctx.lineTo(bx - headLen * Math.cos(angle + 0.4), by - headLen * Math.sin(angle + 0.4));
+      ctx.closePath();
+      ctx.fill();
+      break;
+    }
+    case 'freehand':
+      if (ann.points && ann.points.length > 1) {
+        ctx.beginPath();
+        ctx.moveTo(ann.points[0].x, ann.points[0].y);
+        ann.points.forEach(pt => ctx.lineTo(pt.x, pt.y));
+        ctx.stroke();
+      }
+      break;
+    case 'highlight':
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = ann.color || '#ffff00';
+      ctx.fillRect(ann.x, ann.y, ann.w, ann.h);
+      break;
+    case 'text': {
+      const label = document.createElement('div');
+      label.className = 'ann-label';
+      label.textContent = ann.text;
+      label.style.left = ann.x + 'px';
+      label.style.top = ann.y + 'px';
+      label.style.color = ann.color || '#ff0000';
+      label.style.fontSize = (ann.fontSize || 14) + 'px';
+      label.style.border = selected ? '1px dashed #0e7fd0' : '1px dashed transparent';
+      wrap.appendChild(label);
+      break;
+    }
+    case 'stamp': {
+      ctx.font = `bold ${ann.fontSize || 18}px Segoe UI, sans-serif`;
+      ctx.strokeStyle = ann.color || '#cc0000';
+      ctx.fillStyle = ann.color || '#cc0000';
+      ctx.lineWidth = 2;
+      const metrics = ctx.measureText(ann.text);
+      const pad = 8;
+      ctx.strokeRect(ann.x - pad, ann.y - (ann.fontSize || 18) - pad, metrics.width + pad*2, (ann.fontSize || 18) + pad*2);
+      ctx.globalAlpha = 0.9;
+      ctx.fillText(ann.text, ann.x, ann.y);
+      break;
+    }
+    case 'signature': {
+      if (ann.dataUrl) {
+        const img = new Image();
+        img.onload = () => {
+          ctx.save();
+          ctx.globalAlpha = ann.opacity !== undefined ? ann.opacity : 1;
+          ctx.drawImage(img, ann.x, ann.y, ann.w || 200, ann.h || 80);
+          ctx.restore();
+        };
+        img.src = ann.dataUrl;
+      }
+      break;
+    }
+    case 'watermark': {
+      ctx.save();
+      ctx.globalAlpha = 0.18;
+      ctx.font = `bold ${ann.fontSize || 64}px Segoe UI, sans-serif`;
+      ctx.fillStyle = ann.color || '#888888';
+      ctx.translate(annCanvas.width / 2, annCanvas.height / 2);
+      ctx.rotate(-35 * Math.PI / 180);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(ann.text, 0, 0);
+      ctx.restore();
+      break;
+    }
+  }
+  ctx.restore();
+}
+
+// ============================================================
+//  THUMBNAILS
+// ============================================================
+async function renderThumbnails() {
+  const list = document.getElementById('thumb-list');
+  list.innerHTML = '';
+  const thumbScale = 0.15;
+
+  for (let p = 1; p <= totalPages; p++) {
+    const item = document.createElement('div');
+    item.className = 'thumb-item' + (p === currentPage ? ' selected' : '');
+    item.dataset.page = p;
+
+    const canvas = document.createElement('canvas');
+    const page = await pdfDoc.getPage(p);
+    const rot = pageRotations[p - 1] || 0;
+    const vp = page.getViewport({ scale: thumbScale, rotation: rot });
+    canvas.width = vp.width;
+    canvas.height = vp.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+
+    const label = document.createElement('span');
+    label.textContent = p;
+
+    item.appendChild(canvas);
+    item.appendChild(label);
+    item.addEventListener('click', () => goToPage(p));
+    list.appendChild(item);
+  }
+}
+
+function updateThumbSelection() {
+  document.querySelectorAll('.thumb-item').forEach(item => {
+    item.classList.toggle('selected', parseInt(item.dataset.page) === currentPage);
+  });
+}
+
+// ============================================================
+//  BOOKMARKS
+// ============================================================
+async function renderBookmarks() {
+  const list = document.getElementById('bookmark-list');
+  list.innerHTML = '';
+  try {
+    const outline = await pdfDoc.getOutline();
+    if (!outline || outline.length === 0) {
+      list.innerHTML = '<span style="font-size:11px;color:#666;padding:8px;display:block">No bookmarks</span>';
+      return;
+    }
+    renderOutlineItems(outline, list, 0);
+  } catch { list.innerHTML = '<span style="font-size:11px;color:#666;padding:8px;display:block">No bookmarks</span>'; }
+}
+
+function renderOutlineItems(items, container, depth) {
+  items.forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'bk-item';
+    div.textContent = '\u00A0'.repeat(depth * 3) + item.title;
+    div.title = item.title;
+    div.addEventListener('dblclick', async () => {
+      if (item.dest) {
+        try {
+          let dest = item.dest;
+          if (typeof dest === 'string') dest = await pdfDoc.getDestination(dest);
+          if (dest && dest[0]) {
+            const idx = await pdfDoc.getPageIndex(dest[0]);
+            goToPage(idx + 1);
+          }
+        } catch {}
+      }
+    });
+    container.appendChild(div);
+    if (item.items && item.items.length) renderOutlineItems(item.items, container, depth + 1);
+  });
+}
+
+// ============================================================
+//  NAVIGATION
+// ============================================================
+function goToPage(p) {
+  if (p < 1 || p > totalPages) return;
+  currentPage = p;
+  scrollToPage(p);
+  updateThumbSelection();
+  updateStatus();
+}
+
+function scrollToPage(p) {
+  const wrap = document.querySelector(`.page-wrap[data-page="${p}"]`);
+  if (wrap) wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function prevPage() { goToPage(currentPage - 1); }
+function nextPage() { goToPage(currentPage + 1); }
+
+// ============================================================
+//  ZOOM
+// ============================================================
+async function zoom(delta) {
+  scale = Math.max(0.25, Math.min(5, scale + delta));
+  document.getElementById('zoom-label').textContent = Math.round(scale * 100 / 1.5 * 100) + '%';
+  if (pdfDoc) await renderAllPages();
+}
+
+async function fitPage() {
+  if (!pdfDoc) return;
+  const page = await pdfDoc.getPage(currentPage);
+  const vp = page.getViewport({ scale: 1 });
+  const viewerW = document.getElementById('viewer-wrap').clientWidth - 60;
+  scale = viewerW / vp.width;
+  document.getElementById('zoom-label').textContent = Math.round(scale * 100 / 1.5 * 100) + '%';
+  await renderAllPages();
+}
+
+// ============================================================
+//  STATUS
+// ============================================================
+function updateStatus() {
+  document.getElementById('sb-file').textContent = fileName || 'No file';
+  document.getElementById('sb-page').textContent = totalPages > 0 ? `Page ${currentPage} / ${totalPages}` : 'Page 0';
+  const count = Object.values(annotations).reduce((s, a) => s + a.length, 0);
+  document.getElementById('sb-ann').textContent = `Annotations ${count}`;
+}
+
+// ============================================================
+//  ANNOTATIONS CANVAS EVENTS
+// ============================================================
+function attachCanvasEvents(canvas, pageNum) {
+  canvas.addEventListener('mousedown', e => onAnnMouseDown(e, canvas, pageNum));
+  canvas.addEventListener('mousemove', e => onAnnMouseMove(e, canvas, pageNum));
+  canvas.addEventListener('mouseup', e => onAnnMouseUp(e, canvas, pageNum));
+  canvas.addEventListener('contextmenu', e => { e.preventDefault(); deselectAll(); redrawAnnotations(pageNum, canvas); });
+}
+
+function getCanvasPos(e, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: (e.clientX - rect.left) * (canvas.width / rect.width), y: (e.clientY - rect.top) * (canvas.height / rect.height) };
+}
+
+function onAnnMouseDown(e, canvas, pageNum) {
+  if (activeTool === 'none') {
+    trySelectAnnotation(canvas, pageNum, getCanvasPos(e, canvas));
+    return;
+  }
+  if (activeTool === 'text') {
+    pendingTextPos = { pageNum, ...getCanvasPos(e, canvas) };
+    document.getElementById('ann-text-input').value = '';
+    openDialog('dlg-text');
+    return;
+  }
+  if (activeTool === 'signature') {
+    if (!sigImage) { alert('Please load a signature image first.'); return; }
+    const pos = getCanvasPos(e, canvas);
+    pushAnn(pageNum, { type: 'signature', x: pos.x, y: pos.y, w: 200, h: 80, dataUrl: sigImage.dataUrl });
+    saveSnapshot();
+    redrawAnnotations(pageNum, canvas);
+    updateStatus();
+    return;
+  }
+  if (stampPending) {
+    const pos = getCanvasPos(e, canvas);
+    const color = document.getElementById('stamp-color').value;
+    const text = document.getElementById('stamp-text').value || 'STAMP';
+    pushAnn(pageNum, { type: 'stamp', x: pos.x, y: pos.y, text, color, fontSize: 20 });
+    stampPending = false;
+    saveSnapshot();
+    redrawAnnotations(pageNum, canvas);
+    updateStatus();
+    return;
+  }
+  isDrawing = true;
+  drawStart = getCanvasPos(e, canvas);
+  if (activeTool === 'freehand') {
+    freehandPoints = [drawStart];
+  }
+  canvas.style.cursor = 'crosshair';
+}
+
+function onAnnMouseMove(e, canvas, pageNum) {
+  if (!isDrawing) return;
+  const pos = getCanvasPos(e, canvas);
+  if (activeTool === 'freehand') {
+    freehandPoints.push(pos);
+    // Live draw on ann canvas
+    redrawAnnotations(pageNum, canvas);
+    const ctx = canvas.getContext('2d');
+    ctx.strokeStyle = document.getElementById('ann-color').value;
+    ctx.lineWidth = parseInt(document.getElementById('ann-width').value);
+    ctx.beginPath();
+    ctx.moveTo(freehandPoints[0].x, freehandPoints[0].y);
+    freehandPoints.forEach(pt => ctx.lineTo(pt.x, pt.y));
+    ctx.stroke();
+  } else if (drawStart) {
+    // Live preview
+    redrawAnnotations(pageNum, canvas);
+    const ctx = canvas.getContext('2d');
+    const color = document.getElementById('ann-color').value;
+    const lw = parseInt(document.getElementById('ann-width').value);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = lw;
+    ctx.setLineDash([4, 4]);
+    const x = Math.min(drawStart.x, pos.x), y = Math.min(drawStart.y, pos.y);
+    const w = Math.abs(pos.x - drawStart.x), h = Math.abs(pos.y - drawStart.y);
+    if (activeTool === 'rect' || activeTool === 'highlight') ctx.strokeRect(x, y, w, h);
+    else if (activeTool === 'ellipse') {
+      ctx.beginPath();
+      ctx.ellipse(x + w/2, y + h/2, w/2, h/2, 0, 0, 2*Math.PI);
+      ctx.stroke();
+    } else if (activeTool === 'arrow') {
+      ctx.beginPath();
+      ctx.moveTo(drawStart.x, drawStart.y);
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+function onAnnMouseUp(e, canvas, pageNum) {
+  if (!isDrawing) return;
+  isDrawing = false;
+  const pos = getCanvasPos(e, canvas);
+  const color = document.getElementById('ann-color').value;
+  const lw = parseInt(document.getElementById('ann-width').value);
+
+  if (activeTool === 'freehand') {
+    freehandPoints.push(pos);
+    if (freehandPoints.length > 1) {
+      pushAnn(pageNum, { type: 'freehand', points: [...freehandPoints], color, lineWidth: lw });
+      saveSnapshot();
+    }
+    freehandPoints = [];
+  } else if (drawStart) {
+    const x = Math.min(drawStart.x, pos.x), y = Math.min(drawStart.y, pos.y);
+    const w = Math.abs(pos.x - drawStart.x), h = Math.abs(pos.y - drawStart.y);
+    if (w < 3 && h < 3) { drawStart = null; redrawAnnotations(pageNum, canvas); return; }
+    let ann;
+    switch (activeTool) {
+      case 'rect':      ann = { type: 'rect', x, y, w, h, color, lineWidth: lw }; break;
+      case 'ellipse':   ann = { type: 'ellipse', x, y, w, h, color, lineWidth: lw }; break;
+      case 'arrow':     ann = { type: 'arrow', x: drawStart.x, y: drawStart.y, w: pos.x - drawStart.x, h: pos.y - drawStart.y, color, lineWidth: lw }; break;
+      case 'highlight': ann = { type: 'highlight', x, y, w, h, color: document.getElementById('ann-color').value, opacity: 0.35 }; break;
+    }
+    if (ann) { pushAnn(pageNum, ann); saveSnapshot(); }
+    drawStart = null;
+  }
+
+  redrawAnnotations(pageNum, canvas);
+  updateStatus();
+}
+
+function pushAnn(pageNum, ann) {
+  if (!annotations[pageNum]) annotations[pageNum] = [];
+  annotations[pageNum].push(ann);
+}
+
+function trySelectAnnotation(canvas, pageNum, pos) {
+  const anns = annotations[pageNum] || [];
+  deselectAll();
+  for (let i = anns.length - 1; i >= 0; i--) {
+    if (hitTest(anns[i], pos)) {
+      selectedAnn = { pageNum, idx: i };
+      break;
+    }
+  }
+  redrawAnnotations(pageNum, canvas);
+}
+
+function hitTest(ann, pos) {
+  const PAD = 8;
+  switch (ann.type) {
+    case 'rect': case 'ellipse': case 'highlight': case 'watermark': case 'stamp':
+      return pos.x >= ann.x - PAD && pos.x <= ann.x + (ann.w || 100) + PAD && pos.y >= ann.y - PAD && pos.y <= ann.y + (ann.h || 30) + PAD;
+    case 'text':
+      return pos.x >= ann.x - PAD && pos.x <= ann.x + 200 + PAD && pos.y >= ann.y - PAD && pos.y <= ann.y + 20 + PAD;
+    case 'arrow': case 'freehand':
+      return Math.abs(pos.x - (ann.x + (ann.w||0)/2)) < 20 && Math.abs(pos.y - (ann.y + (ann.h||0)/2)) < 20;
+    case 'signature':
+      return pos.x >= ann.x - PAD && pos.x <= ann.x + (ann.w||200) + PAD && pos.y >= ann.y - PAD && pos.y <= ann.y + (ann.h||80) + PAD;
+    default: return false;
+  }
+}
+
+function deselectAll() { selectedAnn = null; }
+
+function deleteSelectedAnn() {
+  if (!selectedAnn) return;
+  const { pageNum, idx } = selectedAnn;
+  if (!annotations[pageNum]) return;
+  annotations[pageNum].splice(idx, 1);
+  selectedAnn = null;
+  saveSnapshot();
+  const wrap = document.querySelector(`.page-wrap[data-page="${pageNum}"]`);
+  if (wrap) redrawAnnotations(pageNum, wrap.querySelector('.ann-canvas'));
+  updateStatus();
+}
+
+// ============================================================
+//  TOOLS
+// ============================================================
+function setTool(tool) {
+  activeTool = tool;
+  stampPending = false;
+  document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.id === 'tool-' + tool));
+  document.querySelectorAll('.page-wrap canvas.ann-canvas').forEach(c => c.style.cursor = tool === 'none' ? 'default' : 'crosshair');
+}
+
+// ============================================================
+//  TEXT ANNOTATION DIALOG
+// ============================================================
+let _textResolve = null;
+function confirmText() {
+  const text = document.getElementById('ann-text-input').value.trim();
+  closeDialog('dlg-text');
+  if (!text || !pendingTextPos) return;
+  const { pageNum, x, y } = pendingTextPos;
+  const color = document.getElementById('ann-color').value;
+  pushAnn(pageNum, { type: 'text', x, y, text, color, fontSize: 14 });
+  saveSnapshot();
+  const wrap = document.querySelector(`.page-wrap[data-page="${pageNum}"]`);
+  if (wrap) redrawAnnotations(pageNum, wrap.querySelector('.ann-canvas'));
+  pendingTextPos = null;
+  updateStatus();
+}
+
+// ============================================================
+//  STAMP
+// ============================================================
+function showStampDialog() { openDialog('dlg-stamp'); }
+function confirmStamp() {
+  closeDialog('dlg-stamp');
+  stampPending = true;
+  setTool('none');
+  alert('Please select a target page first.');
+}
+
+// ============================================================
+//  SIGNATURE
+// ============================================================
+function loadSignature() { document.getElementById('sig-input').click(); }
+function onSigLoad(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  const reader = new FileReader();
+  reader.onload = ev => { sigImage = { dataUrl: ev.target.result }; alert('Signature loaded. Select the signature tool and click on a page.'); };
+  reader.readAsDataURL(file);
+}
+
+// ============================================================
+//  WATERMARK
+// ============================================================
+function addWatermark() {
+  if (!pdfDoc) return;
+  const text = document.getElementById('wm-text').value || '機�??�件';
+  for (let p = 1; p <= totalPages; p++) {
+    if (!annotations[p]) annotations[p] = [];
+    // Remove existing watermarks first
+    annotations[p] = annotations[p].filter(a => a.type !== 'watermark');
+    annotations[p].push({ type: 'watermark', text, color: '#888888', fontSize: 64, x: 0, y: 0 });
+  }
+  saveSnapshot();
+  // Redraw all
+  document.querySelectorAll('.page-wrap').forEach(wrap => {
+    const p = parseInt(wrap.dataset.page);
+    redrawAnnotations(p, wrap.querySelector('.ann-canvas'));
+  });
+  updateStatus();
+}
+
+// ============================================================
+//  TEXT EXTRACTION
+// ============================================================
+async function copyPageText() {
+  if (!pdfDoc) return;
+  const page = await pdfDoc.getPage(currentPage);
+  const content = await page.getTextContent();
+  const text = content.items.map(i => i.str).join(' ');
+  try {
+    await navigator.clipboard.writeText(text);
+    alert(`Copied text from page ${currentPage}. Length: ${text.length}`);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+    alert(`Text copied from page ${currentPage}. Length: ${text.length}`);
+  }
+}
+
+// ============================================================
+//  PAGE OPERATIONS (via pdf-lib)
+// ============================================================
+async function rotatePage(degrees) {
+  if (!pdfLibDoc) return;
+  const idx = currentPage - 1;
+  const page = pdfLibDoc.getPage(idx);
+  const cur = page.getRotation().angle;
+  page.setRotation(PDFLib.degrees((cur + degrees + 360) % 360));
+  pageRotations[idx] = (pageRotations[idx] || 0) + degrees;
+  await reloadFromPdfLib();
+}
+
+async function deletePage() {
+  if (!pdfLibDoc || totalPages <= 1) { alert('At least one page must remain.'); return; }
+  if (!confirm(`確�??�除�?${currentPage} ?��?`)) return;
+  pdfLibDoc.removePage(currentPage - 1);
+  delete annotations[currentPage];
+  const newAnn = {};
+  Object.keys(annotations).forEach(k => {
+    const n = parseInt(k);
+    if (n < currentPage) newAnn[n] = annotations[n];
+    else if (n > currentPage) newAnn[n - 1] = annotations[n];
+  });
+  annotations = newAnn;
+  await reloadFromPdfLib();
+}
+
+async function movePage(dir) {
+  if (!pdfLibDoc) return;
+  const idx = currentPage - 1;
+  const target = idx + dir;
+  if (target < 0 || target >= pdfLibDoc.getPageCount()) return;
+  // Copy page order via embed+insert trick
+  const pages = pdfLibDoc.getPages();
+  if (dir === -1) {
+    // swap with previous
+    const [copied] = await pdfLibDoc.copyPages(pdfLibDoc, [idx]);
+    pdfLibDoc.insertPage(target, copied);
+    pdfLibDoc.removePage(idx + 1);
+  } else {
+    const [copied] = await pdfLibDoc.copyPages(pdfLibDoc, [idx]);
+    pdfLibDoc.insertPage(target + 1, copied);
+    pdfLibDoc.removePage(idx);
+  }
+  currentPage = target + 1;
+  await reloadFromPdfLib();
+}
+
+async function showInsertBlankDialog() {
+  if (!pdfLibDoc) return;
+  openDialog('dlg-insert');
+}
+
+async function confirmInsertBlank() {
+  closeDialog('dlg-insert');
+  const pos = document.getElementById('insert-pos').value;
+  const size = document.getElementById('insert-size').value;
+  const dims = size === 'a4' ? [595, 842] : [612, 792];
+  const page = pdfLibDoc.addPage(dims);
+  // Move to correct position
+  const newIdx = pdfLibDoc.getPageCount() - 1;
+  let targetIdx = pos === 'before' ? currentPage - 1 : pos === 'after' ? currentPage : pdfLibDoc.getPageCount() - 1;
+  if (targetIdx < newIdx) {
+    const [copied] = await pdfLibDoc.copyPages(pdfLibDoc, [newIdx]);
+    pdfLibDoc.insertPage(targetIdx, copied);
+    pdfLibDoc.removePage(newIdx + 1);
+  }
+  await reloadFromPdfLib();
+}
+
+async function reloadFromPdfLib() {
+  const bytes = await pdfLibDoc.save();
+  const loadingTask = pdfjsLib.getDocument({ data: bytes });
+  pdfDoc = await loadingTask.promise;
+  pdfLibDoc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
+  totalPages = pdfDoc.numPages;
+  if (currentPage > totalPages) currentPage = totalPages;
+  updateStatus();
+  await renderAllPages();
+  await renderThumbnails();
+  saveSnapshot();
+}
+
+// ============================================================
+//  MERGE
+// ============================================================
+function showMergeDialog() { if (!pdfDoc) return; openDialog('dlg-merge'); }
+async function confirmMerge() {
+  closeDialog('dlg-merge');
+  const files = document.getElementById('merge-files').files;
+  if (!files.length) return;
+  let merged = pdfLibDoc;
+  for (const file of files) {
+    const buf = await file.arrayBuffer();
+    const otherDoc = await PDFLib.PDFDocument.load(buf, { ignoreEncryption: true });
+    const indices = otherDoc.getPageIndices();
+    const copied = await merged.copyPages(otherDoc, indices);
+    copied.forEach(p => merged.addPage(p));
+  }
+  pdfLibDoc = merged;
+  await reloadFromPdfLib();
+}
+
+// ============================================================
+//  SPLIT
+// ============================================================
+function showSplitDialog() { if (!pdfDoc) return; openDialog('dlg-split'); }
+async function confirmSplit() {
+  closeDialog('dlg-split');
+  const n = parseInt(document.getElementById('split-n').value) || 1;
+  const bytes = await pdfLibDoc.save();
+  let part = 1;
+  for (let start = 0; start < totalPages; start += n) {
+    const newDoc = await PDFLib.PDFDocument.create();
+    const end = Math.min(start + n, totalPages);
+    const indices = [];
+    for (let i = start; i < end; i++) indices.push(i);
+    const copied = await newDoc.copyPages(pdfLibDoc, indices);
+    copied.forEach(p => newDoc.addPage(p));
+    const partBytes = await newDoc.save();
+    downloadBytes(partBytes, fileName.replace('.pdf', '') + `-part${String(part).padStart(3,'0')}.pdf`);
+    part++;
+  }
+}
+
+// ============================================================
+//  EXTRACT
+// ============================================================
+function showExtractDialog() { if (!pdfDoc) return; openDialog('dlg-extract'); }
+async function confirmExtract() {
+  closeDialog('dlg-extract');
+  const rangeStr = document.getElementById('extract-range').value.trim() || '1-' + totalPages;
+  const indices = parsePageRange(rangeStr, totalPages);
+  if (!indices.length) { alert('Please provide at least one valid page number.'); return; }
+  const newDoc = await PDFLib.PDFDocument.create();
+  const copied = await newDoc.copyPages(pdfLibDoc, indices);
+  copied.forEach(p => newDoc.addPage(p));
+  const bytes = await newDoc.save();
+  downloadBytes(bytes, fileName.replace('.pdf', '') + '-extract.pdf');
+}
+
+function parsePageRange(str, total) {
+  const indices = new Set();
+  str.split(',').forEach(part => {
+    part = part.trim();
+    if (part === 'z') { for (let i = 0; i < total; i++) indices.add(i); return; }
+    const m = part.match(/^(\d+)(?:-(\d+|z))?$/);
+    if (!m) return;
+    const from = parseInt(m[1]) - 1;
+    const to = m[2] === 'z' ? total - 1 : m[2] ? parseInt(m[2]) - 1 : from;
+    for (let i = from; i <= to && i < total; i++) if (i >= 0) indices.add(i);
+  });
+  return [...indices].sort((a, b) => a - b);
+}
+
+// ============================================================
+//  SAVE / DOWNLOAD
+// ============================================================
+async function saveFile() {
+  if (!pdfLibDoc) return;
+  const bytes = await pdfLibDoc.save();
+  downloadBytes(bytes, fileName || 'document.pdf');
+}
+
+function downloadBytes(bytes, name) {
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function printPdf() {
+  if (!pdfLibDoc) return;
+  const bytes = await pdfLibDoc.save();
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url);
+  if (win) win.onload = () => win.print();
+}
+
+// ============================================================
+//  UNDO / REDO  (snapshot-based)
+// ============================================================
+function saveSnapshot() {
+  undoStack.push(JSON.stringify({ annotations, pageRotations, currentPage }));
+  if (undoStack.length > 50) undoStack.shift();
+  redoStack = [];
+}
+
+async function undo() {
+  if (undoStack.length < 2) return;
+  redoStack.push(undoStack.pop());
+  restoreSnapshot(undoStack[undoStack.length - 1]);
+}
+
+async function redo() {
+  if (!redoStack.length) return;
+  const snap = redoStack.pop();
+  undoStack.push(snap);
+  restoreSnapshot(snap);
+}
+
+function restoreSnapshot(snapStr) {
+  if (!snapStr) return;
+  const snap = JSON.parse(snapStr);
+  annotations = snap.annotations || {};
+  pageRotations = snap.pageRotations || {};
+  currentPage = snap.currentPage || 1;
+  document.querySelectorAll('.page-wrap').forEach(wrap => {
+    const p = parseInt(wrap.dataset.page);
+    redrawAnnotations(p, wrap.querySelector('.ann-canvas'));
+  });
+  updateStatus();
+}
+
+// ============================================================
+//  DRAG & DROP
+// ============================================================
+function onDragOver(e) {
+  e.preventDefault();
+  document.getElementById('drop-overlay').classList.add('active');
+}
+function onDragLeave(e) {
+  if (e.relatedTarget && e.currentTarget.contains(e.relatedTarget)) return;
+  document.getElementById('drop-overlay').classList.remove('active');
+}
+async function onDrop(e) {
+  e.preventDefault();
+  document.getElementById('drop-overlay').classList.remove('active');
+  const files = [...e.dataTransfer.files].filter(f => f.name.toLowerCase().endsWith('.pdf'));
+  if (files.length > 0) await loadPdfFile(files[0]);
+}
+
+// ============================================================
+//  SIDEBAR TOGGLE
+// ============================================================
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  sb.style.display = sb.style.display === 'none' ? '' : 'none';
+}
+
+// ============================================================
+//  DIALOGS
+// ============================================================
+function openDialog(id) { document.getElementById(id).classList.add('active'); }
+function closeDialog(id) { document.getElementById(id).classList.remove('active'); }
+
+// ============================================================
+//  KEYBOARD SHORTCUTS
+// ============================================================
+document.addEventListener('keydown', async e => {
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && e.key === 'o') { e.preventDefault(); openFile(); }
+  else if (ctrl && e.key === 's') { e.preventDefault(); await saveFile(); }
+  else if (ctrl && e.key === 'z') { e.preventDefault(); await undo(); }
+  else if (ctrl && e.key === 'y') { e.preventDefault(); await redo(); }
+  else if (ctrl && e.key === 'p') { e.preventDefault(); await printPdf(); }
+  else if (ctrl && (e.key === '=' || e.key === '+')) { e.preventDefault(); await zoom(+0.25); }
+  else if (ctrl && e.key === '-') { e.preventDefault(); await zoom(-0.25); }
+  else if (ctrl && e.key === '0') { e.preventDefault(); await fitPage(); }
+  else if (e.key === 'Delete' && selectedAnn) deleteSelectedAnn();
+  else if (e.key === 'Escape') { setTool('none'); stampPending = false; deselectAll(); }
+  else if (e.key === 'ArrowRight' || e.key === 'PageDown') nextPage();
+  else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevPage();
+});
+
+// ============================================================
+//  SCROLL PAGE TRACKING
+// ============================================================
+document.getElementById('viewer-wrap').addEventListener('scroll', function() {
+  const wraps = document.querySelectorAll('.page-wrap');
+  let best = 1, bestDist = Infinity;
+  const viewerTop = this.getBoundingClientRect().top;
+  wraps.forEach(w => {
+    const dist = Math.abs(w.getBoundingClientRect().top - viewerTop);
+    if (dist < bestDist) { bestDist = dist; best = parseInt(w.dataset.page); }
+  });
+  if (best !== currentPage) { currentPage = best; updateThumbSelection(); updateStatus(); }
+});
+
+// ============================================================
+//  INIT
+// ============================================================
+// Configure PDF.js worker - use local file
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+
+document.getElementById('zoom-label').textContent = '100%';
+updateStatus();
+</script>
+</body>
+</html>
+
+
+

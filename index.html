@@ -1,0 +1,25 @@
+﻿<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>離線 PDF 工作室</title>
+<link rel="icon" href="data:,">
+<script src="lib/pdf.min.js"></script>
+<script src="lib/pdf-lib.min.js"></script>
+<script src="lib/jszip.min.js"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="ov">拖曳 PDF 檔以開啟</div>
+<section id="home"><div class="card"><h1 class="title">離線 PDF 工作室</h1><p class="sub">支援 file://，全程本機處理。</p><div class="row"><button id="openHome" class="hero">開啟檔案</button><button id="dropHome" class="drop">拖曳 PDF 到此</button></div><div class="recent"><h3>最近使用</h3><ul id="recent"></ul></div></div></section>
+<section id="app" class="hidden"><div id="tabs" class="tabs"></div><div id="docTabs" class="doc-tabs hidden"></div><div id="bar" class="bar"></div><div id="ctx" class="ctx"><span class="lab">情境</span><button id="delAnn">刪除註解</button><button id="cpyTxt">複製頁面文字</button></div><div id="main"><aside id="side"><div class="stabs"><button class="stab active" data-p="thumb">縮圖</button><button class="stab" data-p="bookmark">書籤</button><button class="stab" data-p="annotation">註解</button><button class="stab" data-p="attachment">附件</button></div><div id="sp-thumb" class="sp active"><div id="thumbs"></div></div><div id="sp-bookmark" class="sp"><div id="bms" class="note">沒有書籤</div></div><div id="sp-annotation" class="sp"><div class="fg" style="margin-bottom:8px"><label>範圍<input id="annRange" placeholder="all 或 1-3,5"></label><label>批次動作<select id="annBatchAction"><option value="delete">刪除</option><option value="highlight-yellow">黃色螢光</option><option value="highlight-green">綠色螢光</option></select></label></div><button id="annBatchRun">執行批次</button><div id="anns" class="note" style="margin-top:8px">沒有註解</div></div><div id="sp-attachment" class="sp"><div class="fg" style="margin-bottom:8px"><label>新增檔案<button id="attAddBtn">新增附件</button></label><label>套用<button id="attSaveInfo">套用到 PDF</button></label></div><div id="atts" class="note">沒有附件</div></div></aside><main id="view"><div id="pages"></div></main></div><footer id="status"><div id="st">尚未開啟檔案</div><div class="mut">Ctrl+Shift+P：命令面板</div></footer></section>
+<input id="file" type="file" accept=".pdf,application/pdf" multiple class="hidden"><input id="mergeIn" type="file" accept=".pdf,application/pdf" multiple class="hidden"><input id="batchIn" type="file" accept=".pdf,application/pdf" multiple class="hidden"><input id="attIn" type="file" multiple class="hidden"><input id="imgIn" type="file" accept="image/*" multiple class="hidden">
+<div id="wiz"><div class="modal"><div class="mh"><h2 id="wt" style="margin:0;font-size:16px">精靈</h2><button id="wc">關閉</button></div><div class="mb"><div class="steps"><div id="s1" class="step on">1 輸入</div><div id="s2" class="step">2 選項</div><div id="s3" class="step">3 確認</div></div><div id="wb"></div></div><div class="ma"><button id="wp">上一步</button><button id="wn" class="big">下一步</button></div></div></div>
+<div id="cmd"><div class="pbox"><input id="q" placeholder="輸入指令"><div id="ql"></div></div></div>
+<div id="menu"></div>
+<script src="app.js"></script>
+</body>
+</html>
+
+
