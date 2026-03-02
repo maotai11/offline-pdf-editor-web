@@ -38,6 +38,7 @@ const state = {
   presentationTimer: null,
   docs: [],
   activeDocId: null,
+  settingsResolve: null,
 };
 
 const RECENT_KEY = "offline_pdf_recent2";
@@ -130,10 +131,12 @@ const DEFAULT_SHORTCUTS = {
   commandPalette: "Ctrl+Shift+P",
   nextPage: "PageDown",
   prevPage: "PageUp",
+  scrollTop: "Home",
 };
 
 function init() {
   pdfjsLib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
+  initMessaging();
   bindErrorLogging();
   setupAdvancedAnnotationUI();
   setupSearchResultsUI();
@@ -148,6 +151,81 @@ function init() {
   applyReadingAndA11y();
   updateStatus();
   renderDocTabs();
+}
+
+function initMessaging() {
+  if (window.__nativeAlert) return;
+  window.__nativeAlert = window.alert ? window.alert.bind(window) : null;
+  window.alert = (msg) => {
+    const text = String(msg ?? "");
+    const isErr = /(failed|error|invalid|unable|read-only|no valid|must|失敗|錯誤|無法|無效|至少)/i.test(text);
+    showToast(text, isErr ? "error" : "info");
+  };
+}
+
+function showToast(message, type = "info", timeoutMs = 2600) {
+  const root = $("toastStack");
+  if (!root) return;
+  const node = document.createElement("div");
+  node.className = `toast${type === "error" ? " error" : ""}`;
+  node.textContent = message;
+  root.appendChild(node);
+  setTimeout(() => node.remove(), timeoutMs);
+}
+
+function openSettingsDialog({ title, fields, submitText = "套用" }) {
+  return new Promise((resolve) => {
+    const dlg = $("settingsDlg");
+    const form = $("sdForm");
+    const titleEl = $("sdTitle");
+    const ok = $("sdOk");
+    const cancel = $("sdCancel");
+    if (!dlg || !form || !titleEl || !ok || !cancel) return resolve(null);
+    titleEl.textContent = title || "設定";
+    ok.textContent = submitText;
+    form.innerHTML = "";
+    fields.forEach((f) => {
+      const lab = document.createElement("label");
+      lab.textContent = f.label;
+      let input;
+      if (f.type === "select") {
+        input = document.createElement("select");
+        (f.options || []).forEach((o) => {
+          const opt = document.createElement("option");
+          opt.value = o.value;
+          opt.textContent = o.label;
+          if (String(o.value) === String(f.value ?? "")) opt.selected = true;
+          input.appendChild(opt);
+        });
+      } else {
+        input = document.createElement("input");
+        input.type = f.type || "text";
+        if (f.min != null) input.min = String(f.min);
+        if (f.step != null) input.step = String(f.step);
+        input.value = f.value != null ? String(f.value) : "";
+        if (f.placeholder) input.placeholder = f.placeholder;
+      }
+      input.id = `sd_${f.key}`;
+      lab.appendChild(input);
+      form.appendChild(lab);
+    });
+    const close = (val) => {
+      dlg.classList.add("hidden");
+      ok.onclick = null;
+      cancel.onclick = null;
+      resolve(val);
+    };
+    ok.onclick = () => {
+      const out = {};
+      fields.forEach((f) => {
+        const el = $(`sd_${f.key}`);
+        out[f.key] = el ? el.value : "";
+      });
+      close(out);
+    };
+    cancel.onclick = () => close(null);
+    dlg.classList.remove("hidden");
+  });
 }
 
 function setupBookmarkManagerUI() {
@@ -345,11 +423,27 @@ function bindEvents() {
     e.preventDefault();
     openContextMenu(e.clientX, e.clientY);
   });
+  $("view").addEventListener("scroll", updateBackToTopVisibility);
+  $("toTop").addEventListener("click", scrollViewToTop);
   document.addEventListener("click", () => {
     $("menu").style.display = "none";
   });
 
   document.addEventListener("keydown", onGlobalShortcut);
+  updateBackToTopVisibility();
+}
+
+function scrollViewToTop() {
+  const view = $("view");
+  if (!view) return;
+  view.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function updateBackToTopVisibility() {
+  const view = $("view");
+  const btn = $("toTop");
+  if (!view || !btn) return;
+  btn.classList.toggle("show", view.scrollTop > 480);
 }
 
 function renderTabs() {
@@ -389,11 +483,32 @@ function renderToolbar() {
       const btn = document.createElement("button");
       btn.textContent = id === "zoomLabel" ? `${Math.round((state.scale / 1.25) * 100)}%` : text;
       btn.className = cls || "";
+      const isActiveTool = isToolbarActionActive(id);
+      btn.classList.toggle("active-tool", isActiveTool);
+      if (isActiveTool) btn.setAttribute("aria-pressed", "true");
       btn.addEventListener("click", () => onToolbarAction(id));
       wrap.appendChild(btn);
     });
     bar.appendChild(wrap);
   });
+}
+
+function isToolbarActionActive(actionId) {
+  if (actionId === "toolSelect") return state.activeTool === "select";
+  if (actionId === "toolHighlight") return state.activeTool === "highlight";
+  if (actionId === "toolText") return state.activeTool === "text";
+  if (actionId === "toolRect") return state.activeTool === "rect";
+  if (actionId === "toolEllipse") return state.activeTool === "ellipse";
+  if (actionId === "toolLine") return state.activeTool === "line";
+  if (actionId === "toolArrow") return state.activeTool === "arrow";
+  if (actionId === "toolFreehand") return state.activeTool === "freehand";
+  if (actionId === "toolRedact") return state.activeTool === "redact";
+  if (actionId === "toolSticky") return state.activeTool === "sticky";
+  if (actionId === "stampImage") return state.activeTool === "stampImage";
+  if (actionId === "stampReviewed") return state.activeTool === "stampText" && state.stampText === "REVIEWED";
+  if (actionId === "stampApproved") return state.activeTool === "stampText" && state.stampText === "APPROVED";
+  if (actionId === "stampUrgent") return state.activeTool === "stampText" && state.stampText === "URGENT";
+  return false;
 }
 
 function setSidePanel(panelName) {
@@ -423,6 +538,9 @@ function onGlobalShortcut(e) {
     $("menu").style.display = "none";
     return;
   }
+  const tag = (e.target && e.target.tagName ? e.target.tagName.toUpperCase() : "");
+  const isEditing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target && e.target.isContentEditable);
+  if (isEditing && !(e.ctrlKey || e.metaKey || e.altKey)) return;
   const combo = eventToCombo(e);
   const map = getShortcuts();
   const action = Object.keys(map).find((k) => normalizeCombo(map[k]) === combo);
@@ -1899,9 +2017,27 @@ async function deleteCurrentPage() {
 
 async function rotatePagesByRangePrompt() {
   if (!state.pdfLib) return;
-  const range = prompt("Page range (e.g. 1-3,5)", `1-${state.totalPages}`) || "";
-  const degRaw = prompt("Rotate degrees (90, 180, 270)", "90");
-  const degrees = Number(degRaw);
+  const values = await openSettingsDialog({
+    title: "範圍旋轉設定",
+    submitText: "旋轉",
+    fields: [
+      { key: "range", label: "頁面範圍", type: "text", value: `1-${state.totalPages}`, placeholder: "例如 1-3,5" },
+      {
+        key: "degrees",
+        label: "旋轉角度",
+        type: "select",
+        value: "90",
+        options: [
+          { value: "90", label: "90°" },
+          { value: "180", label: "180°" },
+          { value: "270", label: "270°" },
+        ],
+      },
+    ],
+  });
+  if (!values) return;
+  const range = String(values.range || "");
+  const degrees = Number(values.degrees);
   if (![90, 180, 270].includes(degrees)) {
     alert("Invalid degree.");
     return;
@@ -1972,22 +2108,64 @@ function applyCropToPageByTopRect(page, x, yTop, w, h) {
   page.setCropBox(rx, by, rw, rh);
 }
 
+function getSelectedCropRect() {
+  const selected = getSelectedAnnotations();
+  if (!selected.length) return null;
+  const ann = selected.find((a) => ["h", "rd", "r", "e"].includes(a.type)) || selected[0];
+  const x = Number(ann?.x);
+  const yTop = Number(ann?.y);
+  const w = Number(ann?.w);
+  const h = Number(ann?.h);
+  if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n > 0)) return null;
+  return { x, yTop, w, h };
+}
+
 async function cropCurrentPagePrompt() {
   if (!state.pdfLib) return alert("Open a writable PDF first.");
-  const mode = (prompt("Crop mode: margins / rect", "margins") || "margins").trim().toLowerCase();
+  const values = await openSettingsDialog({
+    title: "目前頁面裁切",
+    submitText: "套用裁切",
+    fields: [
+      {
+        key: "mode",
+        label: "裁切模式",
+        type: "select",
+        value: "selection",
+        options: [
+          { value: "selection", label: "使用目前選取區域" },
+          { value: "margins", label: "使用邊距" },
+          { value: "rect", label: "使用固定矩形" },
+        ],
+      },
+      { key: "top", label: "上邊距 (pt)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "right", label: "右邊距 (pt)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "bottom", label: "下邊距 (pt)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "left", label: "左邊距 (pt)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "x", label: "Rect X (pt)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "yTop", label: "Rect Y (pt, from top)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "w", label: "Rect 寬度 (pt)", type: "number", value: "555", min: 1, step: 1 },
+      { key: "h", label: "Rect 高度 (pt)", type: "number", value: "802", min: 1, step: 1 },
+    ],
+  });
+  if (!values) return;
+  const mode = String(values.mode || "selection").trim().toLowerCase();
   const page = state.pdfLib.getPage(state.currentPage - 1);
-  if (mode === "rect") {
-    const x = Number(prompt("Rect X (pt, from left)", "20"));
-    const yTop = Number(prompt("Rect Y (pt, from top)", "20"));
-    const w = Number(prompt("Rect width (pt)", "555"));
-    const h = Number(prompt("Rect height (pt)", "802"));
+  if (mode === "selection") {
+    const box = getSelectedCropRect();
+    if (!box) return alert("請先在頁面上建立或選取一個矩形/螢光/遮蔽區域。");
+    applyCropToPageByTopRect(page, box.x, box.yTop, box.w, box.h);
+  } else if (mode === "rect") {
+    const x = Number(values.x);
+    const yTop = Number(values.yTop);
+    const w = Number(values.w);
+    const h = Number(values.h);
     if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n >= 0)) return alert("Invalid rectangle values.");
     applyCropToPageByTopRect(page, x, yTop, w, h);
   } else {
-    const top = Number(prompt("Top margin (pt)", "20"));
-    const right = Number(prompt("Right margin (pt)", "20"));
-    const bottom = Number(prompt("Bottom margin (pt)", "20"));
-    const left = Number(prompt("Left margin (pt)", "20"));
+    const top = Number(values.top);
+    const right = Number(values.right);
+    const bottom = Number(values.bottom);
+    const left = Number(values.left);
     if (![top, right, bottom, left].every((n) => Number.isFinite(n) && n >= 0)) return alert("Invalid margins.");
     applyCropToPageByMargins(page, top, right, bottom, left);
   }
@@ -1996,23 +2174,48 @@ async function cropCurrentPagePrompt() {
 
 async function cropPagesByRangePrompt() {
   if (!state.pdfLib) return alert("Open a writable PDF first.");
-  const range = prompt("Crop page range (all or 1-3,5,odd,even)", "all");
-  if (range == null) return;
+  const values = await openSettingsDialog({
+    title: "範圍裁切設定",
+    submitText: "套用裁切",
+    fields: [
+      { key: "range", label: "頁面範圍", type: "text", value: "all", placeholder: "all / 1-3,5 / odd / even" },
+      {
+        key: "mode",
+        label: "裁切模式",
+        type: "select",
+        value: "margins",
+        options: [
+          { value: "margins", label: "使用邊距" },
+          { value: "rect", label: "使用固定矩形" },
+        ],
+      },
+      { key: "top", label: "上邊距 (pt)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "right", label: "右邊距 (pt)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "bottom", label: "下邊距 (pt)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "left", label: "左邊距 (pt)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "x", label: "Rect X (pt)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "yTop", label: "Rect Y (pt, from top)", type: "number", value: "20", min: 0, step: 1 },
+      { key: "w", label: "Rect 寬度 (pt)", type: "number", value: "555", min: 1, step: 1 },
+      { key: "h", label: "Rect 高度 (pt)", type: "number", value: "802", min: 1, step: 1 },
+    ],
+  });
+  if (!values) return;
+  const range = String(values.range || "all");
   const idx = parseRangeExtended(range, state.totalPages);
   if (!idx.length) return alert("No valid pages.");
-  const mode = (prompt("Crop mode: margins / rect", "margins") || "margins").trim().toLowerCase();
+  const mode = String(values.mode || "margins").trim().toLowerCase();
   if (mode === "rect") {
-    const x = Number(prompt("Rect X (pt, from left)", "20"));
-    const yTop = Number(prompt("Rect Y (pt, from top)", "20"));
-    const w = Number(prompt("Rect width (pt)", "555"));
-    const h = Number(prompt("Rect height (pt)", "802"));
+    const x = Number(values.x);
+    const yTop = Number(values.yTop);
+    const w = Number(values.w);
+    const h = Number(values.h);
     if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n >= 0)) return alert("Invalid rectangle values.");
     idx.forEach((i) => applyCropToPageByTopRect(state.pdfLib.getPage(i), x, yTop, w, h));
   } else {
-    const top = Number(prompt("Top margin (pt)", "20"));
-    const right = Number(prompt("Right margin (pt)", "20"));
-    const bottom = Number(prompt("Bottom margin (pt)", "20"));
-    const left = Number(prompt("Left margin (pt)", "20"));
+    const top = Number(values.top);
+    const right = Number(values.right);
+    const bottom = Number(values.bottom);
+    const left = Number(values.left);
     if (![top, right, bottom, left].every((n) => Number.isFinite(n) && n >= 0)) return alert("Invalid margins.");
     idx.forEach((i) => applyCropToPageByMargins(state.pdfLib.getPage(i), top, right, bottom, left));
   }
@@ -2058,7 +2261,7 @@ async function setPageBoxesPrompt() {
 
 async function reloadFromPdfLib() {
   const bytes = await state.pdfLib.save();
-  await loadPdfBytes(normalizePdfBytes(new Uint8Array(bytes), state.fileName || "document.pdf"), state.fileName || "document.pdf");
+  await loadPdfBytes(normalizePdfBytes(new Uint8Array(bytes), state.fileName || "document.pdf"), state.fileName || "document.pdf", { skipRecoveryPrompt: true });
 }
 
 async function savePdf(promptName) {
@@ -4822,6 +5025,7 @@ function runShortcutAction(action) {
     commandPalette: () => openCommandPalette(),
     nextPage: () => goToPage(state.currentPage + 1),
     prevPage: () => goToPage(state.currentPage - 1),
+    scrollTop: () => scrollViewToTop(),
   };
   map[action]?.();
 }
