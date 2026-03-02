@@ -93,7 +93,7 @@ const TOOLBAR = {
   ],
   Page: [
     { label: "轉換", items: [["rotate90", "旋轉 90", ""], ["rotate270", "旋轉 270", ""], ["rotateRange", "範圍旋轉", ""]] },
-    { label: "管理", items: [["deletePage", "刪除頁面", ""], ["deleteRange", "範圍刪除", ""], ["insertBlank", "插入空白頁", ""], ["insertFromPdf", "從 PDF 插入", ""], ["extractPages", "提取頁面", ""], ["copyToDoc", "複製到其他文件", ""], ["moveToDoc", "移動到其他文件", ""], ["cropPage", "裁切目前頁", ""], ["cropRange", "範圍裁切", ""], ["setBoxes", "設定頁框", ""]] },
+    { label: "管理", items: [["deletePage", "刪除頁面", ""], ["deleteRange", "範圍刪除", ""], ["insertBlank", "插入空白頁", ""], ["insertFromPdf", "從 PDF 插入", ""], ["extractPages", "提取頁面", ""], ["copyToDoc", "複製到其他文件", ""], ["moveToDoc", "移動到其他文件", ""], ["cropPage", "框選裁切", ""], ["cropRange", "範圍裁切", ""], ["setBoxes", "設定頁框", ""]] },
   ],
   Tools: [
     { label: "精靈", items: [["wizardMerge", "合併精靈", ""], ["wizardSplit", "拆分精靈", ""], ["wizardBatch", "批次精靈", ""], ["wizardConvert", "轉換精靈", ""]] },
@@ -504,6 +504,7 @@ function isToolbarActionActive(actionId) {
   if (actionId === "toolFreehand") return state.activeTool === "freehand";
   if (actionId === "toolRedact") return state.activeTool === "redact";
   if (actionId === "toolSticky") return state.activeTool === "sticky";
+  if (actionId === "cropPage") return state.activeTool === "crop";
   if (actionId === "stampImage") return state.activeTool === "stampImage";
   if (actionId === "stampReviewed") return state.activeTool === "stampText" && state.stampText === "REVIEWED";
   if (actionId === "stampApproved") return state.activeTool === "stampText" && state.stampText === "APPROVED";
@@ -825,8 +826,10 @@ async function renderPages() {
 }
 
 function bindPageLayer(canvas, annLayer, pageNum) {
-  const drawTools = new Set(["highlight", "rect", "ellipse", "line", "arrow", "freehand", "redact"]);
+  const drawTools = new Set(["highlight", "rect", "ellipse", "line", "arrow", "freehand", "redact", "crop"]);
   let draw = null;
+  let previewEl = null;
+  const wrap = canvas.parentElement;
 
   const getXY = (e) => {
     const rect = canvas.getBoundingClientRect();
@@ -834,6 +837,26 @@ function bindPageLayer(canvas, annLayer, pageNum) {
       x: (e.clientX - rect.left) * (canvas.width / rect.width),
       y: (e.clientY - rect.top) * (canvas.height / rect.height),
     };
+  };
+
+  const updatePreview = (x, y, w, h) => {
+    if (!previewEl) {
+      previewEl = document.createElement("div");
+      previewEl.className = "draw-preview";
+      wrap.appendChild(previewEl);
+    }
+    previewEl.classList.toggle("crop-mode", state.activeTool === "crop");
+    Object.assign(previewEl.style, {
+      display: "block",
+      left: `${x}px`,
+      top: `${y}px`,
+      width: `${w}px`,
+      height: `${h}px`,
+    });
+  };
+
+  const clearPreview = () => {
+    if (previewEl) previewEl.style.display = "none";
   };
 
   canvas.addEventListener("mousedown", (e) => {
@@ -851,12 +874,30 @@ function bindPageLayer(canvas, annLayer, pageNum) {
     if (state.activeTool === "freehand") {
       draw.points.push(pt);
     }
+    // Live preview for box-type tools
+    const boxTools = ["highlight", "rect", "ellipse", "redact", "crop"];
+    if (boxTools.includes(state.activeTool)) {
+      updatePreview(
+        Math.min(draw.sx, draw.ex), Math.min(draw.sy, draw.ey),
+        Math.abs(draw.ex - draw.sx), Math.abs(draw.ey - draw.sy)
+      );
+    }
   });
 
   const finishDraw = () => {
+    clearPreview();
     if (!draw) return;
     const { sx, sy, ex, ey, points } = draw;
     draw = null;
+    // Handle crop tool: show overlay with confirm/cancel instead of creating annotation
+    if (state.activeTool === "crop") {
+      const x = Math.min(sx, ex);
+      const y = Math.min(sy, ey);
+      const w = Math.abs(ex - sx);
+      const h = Math.abs(ey - sy);
+      if (w >= 10 && h >= 10) showCropOverlay(wrap, pageNum, x, y, w, h);
+      return;
+    }
     const color = state.annColor || "#ffcc33";
     const width = Math.max(1, state.annWidth || 2);
     if (state.activeTool === "freehand") {
@@ -917,7 +958,7 @@ function bindPageLayer(canvas, annLayer, pageNum) {
     if (state.activeTool === "text") {
       const text = prompt("Text");
       if (!text) return;
-      pushAnnotation({ id: genId(), page: pageNum, type: "t", x, y, text });
+      pushAnnotation({ id: genId(), page: pageNum, type: "t", x, y, text, color: state.annColor || "#202020" });
       redrawAnnotationLayer(pageNum);
       return;
     }
@@ -974,7 +1015,7 @@ function redrawAnnotationLayer(pageNum) {
       });
     } else if (ann.type === "t") {
       node.className = "txt";
-      Object.assign(node.style, { left: `${ann.x}px`, top: `${ann.y}px` });
+      Object.assign(node.style, { left: `${ann.x}px`, top: `${ann.y}px`, color: ann.color || "#202020" });
       node.textContent = ann.text;
     } else if (ann.type === "n") {
       node.className = "note-ann";
@@ -1788,10 +1829,12 @@ async function onToolbarAction(actionId) {
   if (actionId === "find") return promptFind();
   if (actionId === "findNext") return findNext();
   if (actionId === "toolSelect") {
+    removeCropOverlay();
     state.activeTool = "select";
     return renderToolbar();
   }
   if (actionId === "toolHighlight") {
+    removeCropOverlay();
     state.activeTool = "highlight";
     return renderToolbar();
   }
@@ -1856,7 +1899,13 @@ async function onToolbarAction(actionId) {
   if (actionId === "extractPages") return extractPagesPrompt();
   if (actionId === "copyToDoc") return transferPagesToOtherDocumentPrompt(false);
   if (actionId === "moveToDoc") return transferPagesToOtherDocumentPrompt(true);
-  if (actionId === "cropPage") return cropCurrentPagePrompt();
+  if (actionId === "cropPage") {
+    if (!state.pdfLib) return alert("Open a writable PDF first.");
+    state.activeTool = "crop";
+    renderToolbar();
+    showToast("在頁面上拖曳以框選裁切區域，確認後點「套用裁切」", "info", 3500);
+    return;
+  }
   if (actionId === "cropRange") return cropPagesByRangePrompt();
   if (actionId === "setBoxes") return setPageBoxesPrompt();
   if (actionId === "printAdvanced") return printPdfWithOptionsPrompt();
@@ -2088,6 +2137,60 @@ async function insertBlankPage() {
     state.pdfLib.removePage(newIndex + (target <= newIndex ? 1 : 0));
   }
   await reloadFromPdfLib();
+}
+
+function removeCropOverlay() {
+  document.querySelectorAll(".crop-overlay").forEach((el) => el.remove());
+}
+
+function showCropOverlay(wrap, pageNum, x, y, w, h) {
+  removeCropOverlay();
+
+  const overlay = document.createElement("div");
+  overlay.className = "crop-overlay";
+  Object.assign(overlay.style, {
+    left: `${x}px`,
+    top: `${y}px`,
+    width: `${w}px`,
+    height: `${h}px`,
+  });
+
+  const bar = document.createElement("div");
+  bar.className = "crop-confirm-bar";
+  // If selection bottom is near page bottom, flip confirm bar to top
+  if (y + h > wrap.offsetHeight - 60) {
+    bar.style.bottom = "auto";
+    bar.style.top = "-44px";
+  }
+
+  const okBtn = document.createElement("button");
+  okBtn.textContent = "✓ 套用裁切";
+  okBtn.className = "crop-ok-btn";
+  okBtn.onclick = async () => {
+    if (!state.pdfLib) return alert("Open a writable PDF first.");
+    const scale = state.scale;
+    const page = state.pdfLib.getPage(pageNum - 1);
+    // Convert canvas pixels → PDF points (divide by scale)
+    applyCropToPageByTopRect(page, x / scale, y / scale, w / scale, h / scale);
+    removeCropOverlay();
+    state.activeTool = "select";
+    renderToolbar();
+    await reloadFromPdfLib();
+  };
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "✕ 取消";
+  cancelBtn.className = "crop-cancel-btn";
+  cancelBtn.onclick = () => {
+    removeCropOverlay();
+    state.activeTool = "select";
+    renderToolbar();
+  };
+
+  bar.appendChild(okBtn);
+  bar.appendChild(cancelBtn);
+  overlay.appendChild(bar);
+  wrap.appendChild(overlay);
 }
 
 function applyCropToPageByMargins(page, top, right, bottom, left) {
@@ -2785,7 +2888,7 @@ function openContextMenu(x, y) {
     ["提取頁面", () => extractPagesPrompt()],
     ["複製頁面到其他文件", () => transferPagesToOtherDocumentPrompt(false)],
     ["移動頁面到其他文件", () => transferPagesToOtherDocumentPrompt(true)],
-    ["裁切頁面", () => cropCurrentPagePrompt()],
+    ["框選裁切目前頁", () => { if (!state.pdfLib) return alert("Open a writable PDF first."); state.activeTool = "crop"; renderToolbar(); showToast("在頁面上拖曳以框選裁切區域，確認後點「套用裁切」", "info", 3500); }],
     ["範圍裁切", () => cropPagesByRangePrompt()],
     ["設定 Crop/Trim/Bleed", () => setPageBoxesPrompt()],
     ["刪除頁面", () => deleteCurrentPage()],
@@ -4550,7 +4653,7 @@ function buildCommands() {
     ["editShortcuts", "編輯快捷鍵", ""],
     ["rotate90", "旋轉頁面 90", ""],
     ["rotateRange", "範圍旋轉", ""],
-    ["cropPage", "裁切目前頁", ""],
+    ["cropPage", "框選裁切", ""],
     ["cropRange", "範圍裁切", ""],
     ["setBoxes", "設定 Crop/Trim/Bleed", ""],
     ["deletePage", "刪除目前頁", ""],
@@ -4676,7 +4779,12 @@ function runCommand(cmd) {
     editShortcuts: () => editShortcutBindings(),
     rotate90: () => rotateCurrentPage(90),
     rotateRange: () => rotatePagesByRangePrompt(),
-    cropPage: () => cropCurrentPagePrompt(),
+    cropPage: () => {
+      if (!state.pdfLib) return alert("Open a writable PDF first.");
+      state.activeTool = "crop";
+      renderToolbar();
+      showToast("在頁面上拖曳以框選裁切區域，確認後點「套用裁切」", "info", 3500);
+    },
     cropRange: () => cropPagesByRangePrompt(),
     setBoxes: () => setPageBoxesPrompt(),
     deletePage: () => deleteCurrentPage(),

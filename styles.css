@@ -660,3 +660,63 @@ body.a11y-high-contrast .thumb.active,
 body.a11y-high-contrast .sel {
   outline: 3px solid #00d9ff !important;
 }
+
+/* Draw preview overlay (shown while dragging annotation tools) */
+.draw-preview {
+  position: absolute;
+  border: 1.5px dashed #ffcc33;
+  background: transparent;
+  pointer-events: none;
+  z-index: 15;
+  display: none;
+}
+.draw-preview.crop-mode {
+  border-color: #1e90ff;
+  background: rgba(30, 144, 255, 0.07);
+}
+
+/* Crop selection overlay (shown after drawing crop area) */
+.crop-overlay {
+  position: absolute;
+  border: 2px dashed #1e90ff;
+  background: rgba(30, 144, 255, 0.06);
+  pointer-events: none;
+  z-index: 20;
+}
+.crop-confirm-bar {
+  position: absolute;
+  bottom: -44px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+  background: #1a2535;
+  border: 1px solid #2a4060;
+  border-radius: 8px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px #00000066;
+}
+.crop-ok-btn {
+  background: #1a3a5a;
+  border: 1px solid #2a6aaa;
+  color: #90d0ff;
+  padding: 4px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.crop-ok-btn:hover {
+  background: #1e4a78;
+}
+.crop-cancel-btn {
+  background: #3a2020;
+  border: 1px solid #6a3333;
+  color: #ffaaaa;
+  padding: 4px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.crop-cancel-btn:hover {
+  background: #4a2828;
+}
