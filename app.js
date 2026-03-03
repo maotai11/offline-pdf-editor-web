@@ -68,26 +68,43 @@ const TOOLBAR = {
     { label: "搜尋", items: [["find", "搜尋", ""], ["findNext", "下一個", ""]] },
   ],
   Annotate: [
+    { label: "選取", items: [["toolSelect", "▷ 選取", ""]] },
     {
-      label: "工具",
+      label: "繪圖",
       items: [
-        ["toolSelect", "選取", ""],
-        ["toolHighlight", "螢光筆", ""],
-        ["toolText", "文字", ""],
-        ["toolRect", "Rect", ""],
+        ["toolHighlight", "螢光", ""],
+        ["toolRect", "矩形", ""],
         ["toolEllipse", "橢圓", ""],
         ["toolLine", "直線", ""],
         ["toolArrow", "箭頭", ""],
         ["toolFreehand", "手繪", ""],
         ["toolRedact", "遮蔽", ""],
+      ],
+    },
+    {
+      label: "標注",
+      items: [
+        ["toolText", "文字", ""],
         ["toolSticky", "便利貼", ""],
-        ["stampReviewed", "已閱章", ""],
-        ["stampApproved", "核准章", ""],
-        ["stampUrgent", "急件章", ""],
-        ["stampImage", "圖片章", ""],
-        ["stampManager", "印章管理", ""],
-        ["crossSeal", "跨頁騎縫章", ""],
-        ["editAnn", "編輯已選", ""],
+      ],
+    },
+    {
+      label: "章戳",
+      items: [
+        ["stampReviewed", "已閱", ""],
+        ["stampApproved", "核准", ""],
+        ["stampUrgent", "急件", ""],
+        ["stampImage", "圖章", ""],
+        ["stampManager", "管理印章", ""],
+        ["crossSeal", "騎縫章", ""],
+      ],
+    },
+    {
+      label: "操作",
+      items: [
+        ["editAnn", "編輯", ""],
+        ["flattenAnn", "扁平化", ""],
+        ["applyRedact", "套用遮蔽", ""],
       ],
     },
   ],
@@ -151,6 +168,8 @@ function init() {
   applyReadingAndA11y();
   updateStatus();
   renderDocTabs();
+  // Apply initial select-mode class so annotations are draggable immediately
+  $("pages")?.classList.toggle("select-mode", state.activeTool === "select");
 }
 
 function initMessaging() {
@@ -173,7 +192,7 @@ function showToast(message, type = "info", timeoutMs = 2600) {
   setTimeout(() => node.remove(), timeoutMs);
 }
 
-function openSettingsDialog({ title, fields, submitText = "套用" }) {
+function openSettingsDialog({ title, fields, submitText = "套用", message = "" }) {
   return new Promise((resolve) => {
     const dlg = $("settingsDlg");
     const form = $("sdForm");
@@ -184,6 +203,12 @@ function openSettingsDialog({ title, fields, submitText = "套用" }) {
     titleEl.textContent = title || "設定";
     ok.textContent = submitText;
     form.innerHTML = "";
+    if (message) {
+      const _mp = document.createElement("p");
+      _mp.style.cssText = "margin:0 0 12px;font-size:14px;line-height:1.6;color:var(--t)";
+      _mp.textContent = message;
+      form.appendChild(_mp);
+    }
     fields.forEach((f) => {
       const lab = document.createElement("label");
       lab.textContent = f.label;
@@ -197,10 +222,17 @@ function openSettingsDialog({ title, fields, submitText = "套用" }) {
           if (String(o.value) === String(f.value ?? "")) opt.selected = true;
           input.appendChild(opt);
         });
+      } else if (f.type === "textarea") {
+        input = document.createElement("textarea");
+        input.rows = f.rows || 6;
+        input.style.cssText = "width:100%;font-family:monospace;font-size:12px;resize:vertical";
+        input.value = f.value != null ? String(f.value) : "";
+        if (f.placeholder) input.placeholder = f.placeholder;
       } else {
         input = document.createElement("input");
         input.type = f.type || "text";
         if (f.min != null) input.min = String(f.min);
+        if (f.max != null) input.max = String(f.max);
         if (f.step != null) input.step = String(f.step);
         input.value = f.value != null ? String(f.value) : "";
         if (f.placeholder) input.placeholder = f.placeholder;
@@ -228,6 +260,16 @@ function openSettingsDialog({ title, fields, submitText = "套用" }) {
   });
 }
 
+async function openConfirmDialog(message, okText = "確定", cancelText = "取消") {
+  const result = await openSettingsDialog({
+    title: "確認",
+    message,
+    submitText: okText,
+    fields: [],
+  });
+  return result !== null;
+}
+
 function setupBookmarkManagerUI() {
   const panel = $("sp-bookmark");
   if (!panel || $("bmTools")) return;
@@ -252,8 +294,8 @@ function setupBookmarkManagerUI() {
   $("bmAdd").addEventListener("click", addCustomBookmarkPrompt);
   $("bmRename").addEventListener("click", renameCustomBookmarkPrompt);
   $("bmDelete").addEventListener("click", deleteCustomBookmarkPrompt);
-  $("bmClearLocal").addEventListener("click", () => {
-    if (!confirm("要清除所有自訂書籤嗎？")) return;
+  $("bmClearLocal").addEventListener("click", async () => {
+    if (!(await openConfirmDialog("確定要清除所有自訂書籤？", "清除"))) return;
     state.customBookmarks = [];
     state.selectedCustomBookmarkId = null;
     renderBookmarks();
@@ -383,12 +425,47 @@ function setupSearchResultsUI() {
   panel.appendChild(box);
 }
 
+function applyCtxFieldToAnnotation(key, rawVal) {
+  const selected = getSelectedAnnotations();
+  if (!selected.length) return;
+  selected.forEach((ann) => {
+    const val = Number(rawVal);
+    if (key === "color") {
+      if (ann.type === "h") ann.color = hexToRgba(rawVal, 0.35);
+      else if (ann.type !== "si") ann.color = rawVal;
+    } else if (key === "width" && Number.isFinite(val)) {
+      if (!["h", "n", "si", "t"].includes(ann.type)) ann.width = Math.max(1, Math.min(12, val));
+    } else if (key === "text") {
+      if (["t", "n", "s"].includes(ann.type)) ann.text = rawVal;
+    } else if (key === "x" && Number.isFinite(val)) {
+      if (ann.type === "l" || ann.type === "a") ann.x1 = val; else ann.x = val;
+    } else if (key === "y" && Number.isFinite(val)) {
+      if (ann.type === "l" || ann.type === "a") ann.y1 = val; else ann.y = val;
+    } else if (key === "w" && Number.isFinite(val) && val > 0) {
+      ann.w = val;
+    } else if (key === "h" && Number.isFinite(val) && val > 0) {
+      ann.h = val;
+    }
+  });
+  redrawAllAnnotationLayers();
+  renderAnnotationPanel();
+  saveSnapshot();
+}
+
 function bindEvents() {
   $("openHome").addEventListener("click", () => $("file").click());
   $("dropHome").addEventListener("click", () => $("file").click());
   $("file").addEventListener("change", onPickMainFile);
   $("delAnn").addEventListener("click", deleteSelectedAnnotation);
   $("cpyTxt").addEventListener("click", copyCurrentPageText);
+  $("ctxDup")?.addEventListener("click", duplicateSelectedAnnotation);
+  $("ctxColor")?.addEventListener("input", (e) => applyCtxFieldToAnnotation("color", e.target.value));
+  $("ctxWidth")?.addEventListener("input", (e) => applyCtxFieldToAnnotation("width", e.target.value));
+  $("ctxText")?.addEventListener("input", (e) => applyCtxFieldToAnnotation("text", e.target.value));
+  $("ctxX")?.addEventListener("input", (e) => applyCtxFieldToAnnotation("x", e.target.value));
+  $("ctxY")?.addEventListener("input", (e) => applyCtxFieldToAnnotation("y", e.target.value));
+  $("ctxW")?.addEventListener("input", (e) => applyCtxFieldToAnnotation("w", e.target.value));
+  $("ctxH")?.addEventListener("input", (e) => applyCtxFieldToAnnotation("h", e.target.value));
   $("annBatchRun").addEventListener("click", runAnnotationBatch);
   $("attAddBtn").addEventListener("click", () => $("attIn").click());
   $("attIn").addEventListener("change", onPickAttachments);
@@ -584,7 +661,7 @@ async function openPdfFiles(files) {
     const normalized = await readAndNormalizePdfFile(file);
     const doc = newDocRecord(file.name, normalized);
     state.docs.push(doc);
-    pushRecent(file.name);
+    addToRecent(file.name);
     added.push(doc.id);
   }
   renderDocTabs();
@@ -684,7 +761,7 @@ async function loadPdfBytes(bytes, fileName, options = {}) {
   await renderPages();
   await renderThumbnails();
   await renderBookmarks();
-  if (!opts.skipRecoveryPrompt) maybeRestoreRecoveryForFile(state.fileName);
+  if (!opts.skipRecoveryPrompt) await maybeRestoreRecoveryForFile(state.fileName);
   renderAnnotationPanel();
   renderAttachmentPanel();
   renderToolbar();
@@ -933,12 +1010,17 @@ function bindPageLayer(canvas, annLayer, pageNum) {
   canvas.addEventListener("mouseup", finishDraw);
   canvas.addEventListener("mouseleave", finishDraw);
 
-  canvas.addEventListener("click", (e) => {
+  canvas.addEventListener("click", async (e) => {
     if (drawTools.has(state.activeTool)) return;
     const { x, y } = getXY(e);
     if (state.activeTool === "sticky") {
-      const text = prompt("Sticky note text", "Note");
-      if (text == null) return;
+      const vals = await openSettingsDialog({
+        title: "新增便利貼",
+        submitText: "確定",
+        fields: [{ key: "text", label: "便利貼內容", type: "text", value: "備注" }],
+      });
+      if (!vals) return;
+      const text = String(vals.text || "備注");
       pushAnnotation({ id: genId(), page: pageNum, type: "n", x, y, w: 120, h: 64, text, color: "#fff7a8" });
       redrawAnnotationLayer(pageNum);
       return;
@@ -950,15 +1032,19 @@ function bindPageLayer(canvas, annLayer, pageNum) {
       return;
     }
     if (state.activeTool === "stampImage") {
-      if (!state.stampImageDataUrl) return alert("Select a stamp image first.");
+      if (!state.stampImageDataUrl) return alert("請先選擇印章圖片。");
       pushAnnotation({ id: genId(), page: pageNum, type: "si", x, y, w: 140, h: 70, src: state.stampImageDataUrl });
       redrawAnnotationLayer(pageNum);
       return;
     }
     if (state.activeTool === "text") {
-      const text = prompt("Text");
-      if (!text) return;
-      pushAnnotation({ id: genId(), page: pageNum, type: "t", x, y, text, color: state.annColor || "#202020" });
+      const vals = await openSettingsDialog({
+        title: "新增文字",
+        submitText: "確定",
+        fields: [{ key: "text", label: "文字內容", type: "text", value: "" }],
+      });
+      if (!vals || !vals.text.trim()) return;
+      pushAnnotation({ id: genId(), page: pageNum, type: "t", x, y, text: vals.text, color: state.annColor || "#202020" });
       redrawAnnotationLayer(pageNum);
       return;
     }
@@ -1113,6 +1199,52 @@ function redrawAnnotationLayer(pageNum) {
     }
     node.dataset.id = ann.id;
     if (state.selectedAnnotationId === ann.id || state.selectedAnnotationIds.includes(ann.id)) node.classList.add("sel");
+
+    // Drag-to-move: only active when select tool is used
+    node.addEventListener("mousedown", (e) => {
+      if (state.activeTool !== "select") return;
+      e.preventDefault();
+      e.stopPropagation();
+      selectAnnotation(ann.id);
+
+      const startCX = e.clientX;
+      const startCY = e.clientY;
+      // canvas display size may differ from canvas pixel size - get the ratio
+      const canvas = wrap.querySelector(".pc");
+      const rect = canvas ? canvas.getBoundingClientRect() : wrap.getBoundingClientRect();
+      const ratioX = canvas ? canvas.width / rect.width : 1;
+      const ratioY = canvas ? canvas.height / rect.height : 1;
+
+      const orig = {
+        x: ann.x, y: ann.y, w: ann.w, h: ann.h,
+        x1: ann.x1, y1: ann.y1, x2: ann.x2, y2: ann.y2,
+        points: ann.points ? ann.points.map((p) => ({ x: p.x, y: p.y })) : null,
+      };
+
+      const onMove = (mv) => {
+        const dx = (mv.clientX - startCX) * ratioX;
+        const dy = (mv.clientY - startCY) * ratioY;
+        if (ann.type === "l" || ann.type === "a") {
+          ann.x1 = orig.x1 + dx; ann.y1 = orig.y1 + dy;
+          ann.x2 = orig.x2 + dx; ann.y2 = orig.y2 + dy;
+        } else if (ann.type === "f" && orig.points) {
+          ann.points = orig.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        } else {
+          ann.x = orig.x + dx;
+          ann.y = orig.y + dy;
+        }
+        redrawAnnotationLayer(pageNum);
+        refreshCtxPanel();
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        saveSnapshot();
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+
     layer.appendChild(node);
   });
 }
@@ -1206,12 +1338,87 @@ function editSelectedAnnotation() {
     text.select();
     return;
   }
-  alert("Use annotation panel to edit selected annotation(s).");
+  alert("請使用左側「註解」面板來編輯已選取的註解。");
 }
 
 function refreshContextStrip() {
   $("ctx").classList.toggle("show", !!state.selectedAnnotationId || state.selectedAnnotationIds.length > 0);
   refreshSelectedAnnotationEditor();
+  refreshCtxPanel();
+}
+
+function refreshCtxPanel() {
+  const ann = getSelectedAnnotations()[0];
+  const hasBox = ann && ["h", "rd", "r", "e", "n", "s", "si"].includes(ann.type);
+  const hasLine = ann && ["l", "a"].includes(ann.type);
+  const hasFree = ann && ann.type === "f";
+  const hasText = ann && ["t", "n", "s"].includes(ann.type);
+  const hasColor = ann && ann.type !== "si";
+  const hasWidth = ann && !["h", "n", "si", "t"].includes(ann.type);
+
+  // Color
+  const ctxColor = $("ctxColor");
+  if (ctxColor) {
+    ctxColor.disabled = !hasColor;
+    if (ann && hasColor) ctxColor.value = toHexColor(ann.color || state.annColor || "#ffcc33");
+  }
+
+  // Width
+  const ctxWidth = $("ctxWidth");
+  if (ctxWidth) {
+    ctxWidth.disabled = !hasWidth;
+    if (ann && hasWidth) ctxWidth.value = String(ann.width || 2);
+  }
+
+  // Text
+  const ctxTextWrap = $("ctxTextWrap");
+  const ctxText = $("ctxText");
+  if (ctxTextWrap && ctxText) {
+    ctxTextWrap.style.display = hasText ? "" : "none";
+    if (hasText) ctxText.value = String(ann.text || "");
+  }
+
+  // Position/size
+  const setField = (id, val, show) => {
+    const wrap = $(id + "Wrap");
+    const inp = $(id);
+    if (!wrap || !inp) return;
+    wrap.style.display = show ? "" : "none";
+    if (show && val != null) inp.value = String(Math.round(val));
+  };
+
+  if (hasBox) {
+    setField("ctxX", ann.x, true);
+    setField("ctxY", ann.y, true);
+    setField("ctxW", ann.w, true);
+    setField("ctxH", ann.h, true);
+  } else if (hasLine) {
+    setField("ctxX", ann.x1, true);
+    setField("ctxY", ann.y1, true);
+    setField("ctxW", null, false);
+    setField("ctxH", null, false);
+  } else if (hasFree || !ann) {
+    ["ctxX", "ctxY", "ctxW", "ctxH"].forEach((id) => {
+      const w = $(id + "Wrap");
+      if (w) w.style.display = "none";
+    });
+  }
+}
+
+function duplicateSelectedAnnotation() {
+  const ann = getSelectedAnnotations()[0];
+  if (!ann) return;
+  const clone = JSON.parse(JSON.stringify(ann));
+  clone.id = genId();
+  // Offset slightly so it's visually distinct
+  const offset = 16;
+  if (clone.x != null) clone.x += offset;
+  if (clone.y != null) clone.y += offset;
+  if (clone.x1 != null) { clone.x1 += offset; clone.x2 += offset; }
+  if (clone.y1 != null) { clone.y1 += offset; clone.y2 += offset; }
+  if (clone.points) clone.points = clone.points.map((p) => ({ x: p.x + offset, y: p.y + offset }));
+  pushAnnotation(clone);
+  redrawAnnotationLayer(ann.page);
 }
 
 function getSelectedAnnotations() {
@@ -1405,7 +1612,7 @@ function runAnnotationBatch() {
   const action = $("annBatchAction")?.value || "delete";
   const targets = parseAnnotationRangeInput($("annRange")?.value || "all");
   if (!targets.length) {
-    alert("No valid target pages.");
+    alert("沒有有效目標頁面。");
     return;
   }
 
@@ -1458,7 +1665,7 @@ function renderAttachmentPanel() {
   state.attachments.forEach((att) => {
     const row = document.createElement("div");
     row.className = "thumb";
-    row.innerHTML = `<div style="text-align:left">${att.name}</div><div style="display:flex;gap:6px;margin-top:6px"><button data-act="download">Download</button><button data-act="remove">Remove</button></div>`;
+    row.innerHTML = `<div style="text-align:left">${att.name}</div><div style="display:flex;gap:6px;margin-top:6px"><button data-act="download">下載</button><button data-act="remove">移除</button></div>`;
     row.querySelector('[data-act="download"]').addEventListener("click", (ev) => {
       ev.stopPropagation();
       const blob = new Blob([att.bytes], { type: att.type || "application/octet-stream" });
@@ -1480,21 +1687,21 @@ function renderAttachmentPanel() {
 
 async function applyAttachmentsToPdf() {
   if (!state.pdfLib) {
-    alert("Open a PDF first.");
+    alert("請先開啟 PDF。");
     return;
   }
   if (!state.attachments.length) {
-    alert("No attachments to apply.");
+    alert("沒有附件可套用。");
     return;
   }
   if (typeof state.pdfLib.attach !== "function") {
-    alert("Current pdf-lib build does not support attachments.");
+    alert("目前版本的 pdf-lib 不支援附件功能。");
     return;
   }
   for (const att of state.attachments) {
     await state.pdfLib.attach(att.bytes, att.name, { mimeType: att.type || "application/octet-stream" });
   }
-  alert(`Applied ${state.attachments.length} attachment(s) to current PDF. Save file to persist.`);
+  alert(`已將 ${state.attachments.length} 個附件套用到 PDF。請儲存以保留。`);
 }
 
 async function renderThumbnails() {
@@ -1575,8 +1782,14 @@ async function togglePresentationMode(autoPlay) {
     state.presentationTimer = null;
   }
   if (!inFs && autoPlay) {
-    const sec = Number(prompt("Auto-play interval seconds", "3"));
-    const ms = Math.max(1, Number.isFinite(sec) ? sec : 3) * 1000;
+    const vals = await openSettingsDialog({
+      title: "自動播放設定",
+      submitText: "開始播放",
+      fields: [{ key: "sec", label: "每頁停留秒數", type: "number", value: "3", min: 1, step: 1 }],
+    });
+    const sec = vals ? Number(vals.sec) : 0;
+    if (!sec || !Number.isFinite(sec)) return;
+    const ms = Math.max(1, sec) * 1000;
     state.presentationTimer = setInterval(() => {
       if (!document.fullscreenElement) {
         clearInterval(state.presentationTimer);
@@ -1706,11 +1919,20 @@ async function renderBookmarks() {
   }
 }
 
-function addCustomBookmarkPrompt() {
-  if (!state.pdfjs) return alert("Open a PDF first.");
-  const page = Number(prompt("Bookmark page number", String(state.currentPage)));
-  if (!Number.isFinite(page) || page < 1 || page > state.totalPages) return alert("Invalid page number.");
-  const title = (prompt("Bookmark title", `Bookmark P${page}`) || "").trim();
+async function addCustomBookmarkPrompt() {
+  if (!state.pdfjs) return alert("請先開啟 PDF。");
+  const abVals = await openSettingsDialog({
+    title: "新增書籤",
+    submitText: "新增",
+    fields: [
+      { key: "page", label: "頁碼", type: "number", value: String(state.currentPage), min: "1", step: "1" },
+      { key: "title", label: "書籤名稱", type: "text", value: `書籤 P${state.currentPage}` },
+    ],
+  });
+  if (!abVals) return;
+  const page = Number(abVals.page);
+  if (!Number.isFinite(page) || page < 1 || page > state.totalPages) return alert("頁碼無效。");
+  const title = (abVals.title || "").trim();
   if (!title) return;
   state.customBookmarks.push({ id: genId(), page, title });
   state.selectedCustomBookmarkId = null;
@@ -1718,33 +1940,48 @@ function addCustomBookmarkPrompt() {
   persistRecoveryForFile();
 }
 
-function renameCustomBookmarkPrompt() {
-  if (!state.selectedCustomBookmarkId) return alert("Select a custom bookmark first.");
+async function renameCustomBookmarkPrompt() {
+  if (!state.selectedCustomBookmarkId) return alert("請先選取一個自訂書籤。");
   const bm = state.customBookmarks.find((x) => x.id === state.selectedCustomBookmarkId);
-  if (!bm) return alert("Selected bookmark not found.");
-  const title = prompt("Rename bookmark", bm.title);
-  if (title == null) return;
-  bm.title = title.trim() || bm.title;
+  if (!bm) return alert("找不到已選取的書籤。");
+  const rbVals = await openSettingsDialog({
+    title: "重新命名書籤",
+    submitText: "確定",
+    fields: [{ key: "title", label: "書籤名稱", type: "text", value: bm.title }],
+  });
+  if (!rbVals) return;
+  bm.title = (rbVals.title || "").trim() || bm.title;
   renderBookmarks();
   persistRecoveryForFile();
 }
 
-function deleteCustomBookmarkPrompt() {
-  if (!state.selectedCustomBookmarkId) return alert("Select a custom bookmark first.");
+async function deleteCustomBookmarkPrompt() {
+  if (!state.selectedCustomBookmarkId) return alert("請先選取一個自訂書籤。");
   state.customBookmarks = state.customBookmarks.filter((x) => x.id !== state.selectedCustomBookmarkId);
   state.selectedCustomBookmarkId = null;
   renderBookmarks();
   persistRecoveryForFile();
 }
 
-function openBookmarkManagerPrompt() {
-  const action = (prompt("Bookmark manager: add / rename / delete / list", "list") || "").trim().toLowerCase();
+async function openBookmarkManagerPrompt() {
+  const bmMgrVals = await openSettingsDialog({
+    title: "書籤管理",
+    submitText: "執行",
+    fields: [{ key: "action", label: "動作", type: "select", value: "list", options: [
+      { value: "list", label: "列出所有書籤" },
+      { value: "add", label: "新增書籤" },
+      { value: "rename", label: "重新命名書籤" },
+      { value: "delete", label: "刪除書籤" },
+    ]}],
+  });
+  if (!bmMgrVals) return;
+  const action = bmMgrVals.action || "list";
   if (action === "add") return addCustomBookmarkPrompt();
   if (action === "rename") return renameCustomBookmarkPrompt();
   if (action === "delete") return deleteCustomBookmarkPrompt();
   if (action === "list") {
     const lines = state.customBookmarks.map((b) => `[P${b.page}] ${b.title}`).join("\n");
-    alert(lines || "No custom bookmarks");
+    alert(lines || "目前沒有自訂書籤");
   }
 }
 
@@ -1810,6 +2047,13 @@ function updateStatus() {
   $("st").textContent = `${state.fileName} | 第 ${label} 頁 (${state.currentPage}/${state.totalPages}) | 縮放 ${Math.round((state.scale / 1.25) * 100)}% | 註解 ${annCount}${ro}`;
 }
 
+function setActiveTool(tool) {
+  state.activeTool = tool;
+  const pages = $("pages");
+  if (pages) pages.classList.toggle("select-mode", tool === "select");
+  renderToolbar();
+}
+
 async function onToolbarAction(actionId) {
   if (actionId === "open") return $("file").click();
   if (actionId === "save") return savePdf(false);
@@ -1817,8 +2061,11 @@ async function onToolbarAction(actionId) {
   if (actionId === "prev") return goToPage(state.currentPage - 1);
   if (actionId === "next") return goToPage(state.currentPage + 1);
   if (actionId === "goto") {
-    const target = parseInt(prompt("前往頁碼", String(state.currentPage)), 10);
-    if (!Number.isNaN(target)) goToPage(target);
+    openSettingsDialog({
+      title: "前往頁面",
+      submitText: "前往",
+      fields: [{ key: "p", label: `頁碼（1～${state.totalPages}）`, type: "number", value: String(state.currentPage), min: "1", max: String(state.totalPages), step: "1" }],
+    }).then(v => { if (v) { const p = Number(v.p); if (Number.isFinite(p) && p >= 1 && p <= state.totalPages) goToPage(p); } });
     return;
   }
   if (actionId === "zoomOut") return zoom(-0.15);
@@ -1828,62 +2075,27 @@ async function onToolbarAction(actionId) {
   if (actionId === "redo") return redo();
   if (actionId === "find") return promptFind();
   if (actionId === "findNext") return findNext();
-  if (actionId === "toolSelect") {
-    removeCropOverlay();
-    state.activeTool = "select";
-    return renderToolbar();
-  }
-  if (actionId === "toolHighlight") {
-    removeCropOverlay();
-    state.activeTool = "highlight";
-    return renderToolbar();
-  }
-  if (actionId === "toolText") {
-    state.activeTool = "text";
-    return renderToolbar();
-  }
-  if (actionId === "toolRect") {
-    state.activeTool = "rect";
-    return renderToolbar();
-  }
-  if (actionId === "toolEllipse") {
-    state.activeTool = "ellipse";
-    return renderToolbar();
-  }
-  if (actionId === "toolLine") {
-    state.activeTool = "line";
-    return renderToolbar();
-  }
-  if (actionId === "toolArrow") {
-    state.activeTool = "arrow";
-    return renderToolbar();
-  }
-  if (actionId === "toolFreehand") {
-    state.activeTool = "freehand";
-    return renderToolbar();
-  }
-  if (actionId === "toolRedact") {
-    state.activeTool = "redact";
-    return renderToolbar();
-  }
-  if (actionId === "toolSticky") {
-    state.activeTool = "sticky";
-    return renderToolbar();
-  }
+  if (actionId === "toolSelect") { removeCropOverlay(); return setActiveTool("select"); }
+  if (actionId === "toolHighlight") { removeCropOverlay(); return setActiveTool("highlight"); }
+  if (actionId === "toolText") return setActiveTool("text");
+  if (actionId === "toolRect") return setActiveTool("rect");
+  if (actionId === "toolEllipse") return setActiveTool("ellipse");
+  if (actionId === "toolLine") return setActiveTool("line");
+  if (actionId === "toolArrow") return setActiveTool("arrow");
+  if (actionId === "toolFreehand") return setActiveTool("freehand");
+  if (actionId === "toolRedact") return setActiveTool("redact");
+  if (actionId === "toolSticky") return setActiveTool("sticky");
   if (actionId === "stampReviewed") {
-    state.activeTool = "stampText";
     state.stampText = "REVIEWED";
-    return renderToolbar();
+    return setActiveTool("stampText");
   }
   if (actionId === "stampApproved") {
-    state.activeTool = "stampText";
     state.stampText = "APPROVED";
-    return renderToolbar();
+    return setActiveTool("stampText");
   }
   if (actionId === "stampUrgent") {
-    state.activeTool = "stampText";
     state.stampText = "URGENT";
-    return renderToolbar();
+    return setActiveTool("stampText");
   }
   if (actionId === "stampImage") return pickStampImageAndActivate();
   if (actionId === "stampManager") return openStampManagerPrompt();
@@ -1900,10 +2112,9 @@ async function onToolbarAction(actionId) {
   if (actionId === "copyToDoc") return transferPagesToOtherDocumentPrompt(false);
   if (actionId === "moveToDoc") return transferPagesToOtherDocumentPrompt(true);
   if (actionId === "cropPage") {
-    if (!state.pdfLib) return alert("Open a writable PDF first.");
-    state.activeTool = "crop";
-    renderToolbar();
-    showToast("在頁面上拖曳以框選裁切區域，確認後點「套用裁切」", "info", 3500);
+    if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
+    setActiveTool("crop");
+    showToast("拖曳選取要保留的區域（框外部分將被裁掉），確認後點「套用裁切」", "info", 4000);
     return;
   }
   if (actionId === "cropRange") return cropPagesByRangePrompt();
@@ -1981,6 +2192,9 @@ async function onToolbarAction(actionId) {
   }
   if (actionId === "present") return togglePresentationMode(false);
   if (actionId === "presentAuto") return togglePresentationMode(true);
+  if (actionId === "commandPalette") return openCommandPalette();
+  if (actionId === "findNext") return findNext();
+  if (actionId === "scrollTop") return scrollViewToTop();
 }
 
 async function zoom(delta) {
@@ -2056,10 +2270,10 @@ async function rotateCurrentPage(degrees) {
 async function deleteCurrentPage() {
   if (!state.pdfLib) return;
   if (state.totalPages <= 1) {
-    alert("At least one page must remain.");
+    alert("至少需要保留一頁。");
     return;
   }
-  if (!confirm(`Delete page ${state.currentPage}?`)) return;
+  if (!(await openConfirmDialog(`確定刪除第 ${state.currentPage} 頁？`, "刪除"))) return;
   state.pdfLib.removePage(state.currentPage - 1);
   await reloadFromPdfLib();
 }
@@ -2088,12 +2302,12 @@ async function rotatePagesByRangePrompt() {
   const range = String(values.range || "");
   const degrees = Number(values.degrees);
   if (![90, 180, 270].includes(degrees)) {
-    alert("Invalid degree.");
+    alert("旋轉角度無效。");
     return;
   }
   const indices = parseRange(range, state.totalPages);
   if (!indices.length) {
-    alert("No valid pages in range.");
+    alert("範圍內沒有有效頁面。");
     return;
   }
   indices.forEach((i) => {
@@ -2106,18 +2320,17 @@ async function rotatePagesByRangePrompt() {
 
 async function deletePagesByRangePrompt() {
   if (!state.pdfLib) return;
-  const range = prompt("Delete page range (e.g. 2,4-6)", "");
-  if (!range) return;
-  const indices = parseRange(range, state.totalPages);
-  if (!indices.length) {
-    alert("No valid pages in range.");
-    return;
-  }
-  if (indices.length >= state.totalPages) {
-    alert("At least one page must remain.");
-    return;
-  }
-  if (!confirm(`Delete ${indices.length} page(s)?`)) return;
+  const vals = await openSettingsDialog({
+    title: "刪除頁面範圍",
+    submitText: "刪除",
+    fields: [{ key: "range", label: "頁面範圍（例如 2,4-6 或 all）", type: "text", value: "", placeholder: "例如 2,4-6 或 all" }],
+  });
+  if (!vals || !vals.range.trim()) return;
+  const indices = parseRange(vals.range, state.totalPages);
+  if (!indices.length) return alert("範圍內沒有有效頁面。");
+  if (indices.length >= state.totalPages) return alert("至少需要保留一頁。");
+  const ok = await openConfirmDialog(`確定刪除第 ${indices.map(i=>i+1).join('、')} 頁（共 ${indices.length} 頁）？`, "刪除");
+  if (!ok) return;
   indices
     .slice()
     .sort((a, b) => b - a)
@@ -2127,7 +2340,17 @@ async function deletePagesByRangePrompt() {
 
 async function insertBlankPage() {
   if (!state.pdfLib) return;
-  const pos = prompt("Insert blank page position: before / after / end", "after") || "after";
+  const vals = await openSettingsDialog({
+    title: "插入空白頁",
+    submitText: "插入",
+    fields: [{ key: "pos", label: "插入位置", type: "select", value: "after", options: [
+      { value: "before", label: "在目前頁之前" },
+      { value: "after", label: "在目前頁之後" },
+      { value: "end", label: "文件末尾" },
+    ]}],
+  });
+  if (!vals) return;
+  const pos = vals.pos || "after";
   state.pdfLib.addPage([595, 842]);
   const newIndex = state.pdfLib.getPageCount() - 1;
   let target = pos === "before" ? state.currentPage - 1 : pos === "after" ? state.currentPage : state.pdfLib.getPageCount() - 1;
@@ -2167,7 +2390,7 @@ function showCropOverlay(wrap, pageNum, x, y, w, h) {
   okBtn.textContent = "✓ 套用裁切";
   okBtn.className = "crop-ok-btn";
   okBtn.onclick = async () => {
-    if (!state.pdfLib) return alert("Open a writable PDF first.");
+    if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
     const scale = state.scale;
     const page = state.pdfLib.getPage(pageNum - 1);
     // Convert canvas pixels → PDF points (divide by scale)
@@ -2224,7 +2447,7 @@ function getSelectedCropRect() {
 }
 
 async function cropCurrentPagePrompt() {
-  if (!state.pdfLib) return alert("Open a writable PDF first.");
+  if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
   const values = await openSettingsDialog({
     title: "目前頁面裁切",
     submitText: "套用裁切",
@@ -2262,21 +2485,21 @@ async function cropCurrentPagePrompt() {
     const yTop = Number(values.yTop);
     const w = Number(values.w);
     const h = Number(values.h);
-    if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n >= 0)) return alert("Invalid rectangle values.");
+    if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n >= 0)) return alert("矩形數值無效。");
     applyCropToPageByTopRect(page, x, yTop, w, h);
   } else {
     const top = Number(values.top);
     const right = Number(values.right);
     const bottom = Number(values.bottom);
     const left = Number(values.left);
-    if (![top, right, bottom, left].every((n) => Number.isFinite(n) && n >= 0)) return alert("Invalid margins.");
+    if (![top, right, bottom, left].every((n) => Number.isFinite(n) && n >= 0)) return alert("邊距數值無效。");
     applyCropToPageByMargins(page, top, right, bottom, left);
   }
   await reloadFromPdfLib();
 }
 
 async function cropPagesByRangePrompt() {
-  if (!state.pdfLib) return alert("Open a writable PDF first.");
+  if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
   const values = await openSettingsDialog({
     title: "範圍裁切設定",
     submitText: "套用裁切",
@@ -2305,21 +2528,21 @@ async function cropPagesByRangePrompt() {
   if (!values) return;
   const range = String(values.range || "all");
   const idx = parseRangeExtended(range, state.totalPages);
-  if (!idx.length) return alert("No valid pages.");
+  if (!idx.length) return alert("沒有有效頁面。");
   const mode = String(values.mode || "margins").trim().toLowerCase();
   if (mode === "rect") {
     const x = Number(values.x);
     const yTop = Number(values.yTop);
     const w = Number(values.w);
     const h = Number(values.h);
-    if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n >= 0)) return alert("Invalid rectangle values.");
+    if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n >= 0)) return alert("矩形數值無效。");
     idx.forEach((i) => applyCropToPageByTopRect(state.pdfLib.getPage(i), x, yTop, w, h));
   } else {
     const top = Number(values.top);
     const right = Number(values.right);
     const bottom = Number(values.bottom);
     const left = Number(values.left);
-    if (![top, right, bottom, left].every((n) => Number.isFinite(n) && n >= 0)) return alert("Invalid margins.");
+    if (![top, right, bottom, left].every((n) => Number.isFinite(n) && n >= 0)) return alert("邊距數值無效。");
     idx.forEach((i) => applyCropToPageByMargins(state.pdfLib.getPage(i), top, right, bottom, left));
   }
   await reloadFromPdfLib();
@@ -2332,21 +2555,38 @@ function setPdfPageBox(page, boxName, x, y, w, h) {
 }
 
 async function setPageBoxesPrompt() {
-  if (!state.pdfLib) return alert("Open a writable PDF first.");
-  const range = prompt("Target pages (all or 1-3,5)", String(state.currentPage));
-  if (range == null) return;
-  const idx = parseRangeExtended(range, state.totalPages);
-  if (!idx.length) return alert("No valid pages.");
-  const boxesRaw = (prompt("Boxes to set (crop,trim,bleed) comma-separated", "crop,trim") || "crop,trim").toLowerCase();
+  if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
+  const sbVals = await openSettingsDialog({
+    title: "設定頁框（Crop/Trim/Bleed）",
+    submitText: "套用",
+    fields: [
+      { key: "range", label: "目標頁面", type: "text", value: String(state.currentPage), placeholder: "all / 1-3,5" },
+      { key: "boxes", label: "要設定的頁框", type: "select", value: "crop,trim", options: [
+        { value: "crop", label: "僅 CropBox" },
+        { value: "trim", label: "僅 TrimBox" },
+        { value: "bleed", label: "僅 BleedBox" },
+        { value: "crop,trim", label: "Crop + Trim" },
+        { value: "crop,trim,bleed", label: "全部" },
+      ]},
+      { key: "x", label: "X（pt，從左）", type: "number", value: "20", min: "0", step: "1" },
+      { key: "yTop", label: "Y（pt，從頂）", type: "number", value: "20", min: "0", step: "1" },
+      { key: "w", label: "寬（pt）", type: "number", value: "555", min: "1", step: "1" },
+      { key: "h", label: "高（pt）", type: "number", value: "802", min: "1", step: "1" },
+    ],
+  });
+  if (!sbVals) return;
+  const idx = parseRangeExtended(sbVals.range || String(state.currentPage), state.totalPages);
+  if (!idx.length) return alert("沒有有效頁面。");
+  const boxesRaw = (sbVals.boxes || "crop,trim").toLowerCase();
   const setCrop = boxesRaw.includes("crop");
   const setTrim = boxesRaw.includes("trim");
   const setBleed = boxesRaw.includes("bleed");
-  if (!setCrop && !setTrim && !setBleed) return alert("No valid boxes selected.");
-  const x = Number(prompt("Box X (pt, from left)", "20"));
-  const yTop = Number(prompt("Box Y (pt, from top)", "20"));
-  const w = Number(prompt("Box width (pt)", "555"));
-  const h = Number(prompt("Box height (pt)", "802"));
-  if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n >= 0)) return alert("Invalid box geometry.");
+  if (!setCrop && !setTrim && !setBleed) return alert("請至少選取一種頁框類型。");
+  const x = Number(sbVals.x);
+  const yTop = Number(sbVals.yTop);
+  const w = Number(sbVals.w);
+  const h = Number(sbVals.h);
+  if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n >= 0)) return alert("框架幾何數值無效。");
 
   idx.forEach((i) => {
     const page = state.pdfLib.getPage(i);
@@ -2369,12 +2609,21 @@ async function reloadFromPdfLib() {
 
 async function savePdf(promptName) {
   if (!state.pdfLib) {
-    alert("This file is opened in read-only mode. Save is unavailable.");
+    alert("此檔案以唯讀模式開啟，無法儲存。");
     return;
   }
   const bytes = await state.pdfLib.save();
   const defaultName = state.fileName || "document.pdf";
-  const outputName = promptName ? prompt("Output file name", defaultName) || defaultName : defaultName;
+  let outputName = defaultName;
+  if (promptName) {
+    const snVals = await openSettingsDialog({
+      title: "另存新檔",
+      submitText: "儲存",
+      fields: [{ key: "name", label: "檔名", type: "text", value: defaultName }],
+    });
+    if (!snVals) return;
+    outputName = (snVals.name || defaultName).trim();
+  }
   downloadBytes(bytes, outputName);
 }
 
@@ -2403,7 +2652,7 @@ function downloadBytes(bytes, name, mimeType) {
 
 async function printPdf() {
   if (!state.pdfLib) {
-    alert("This file is opened in read-only mode. Print is unavailable.");
+    alert("此檔案以唯讀模式開啟，無法列印。");
     return;
   }
   const bytes = await state.pdfLib.save();
@@ -2436,13 +2685,22 @@ function parseRangeExtended(expr, total) {
 
 async function printPdfWithOptionsPrompt() {
   if (!state.pdfLib) {
-    alert("This file is opened in read-only mode. Print is unavailable.");
+    alert("此檔案以唯讀模式開啟，無法列印。");
     return;
   }
-  const rangeExpr = prompt("Print range: all / 1-3,8 / odd / even", "all");
-  if (rangeExpr == null) return;
-  const parity = (prompt("Parity filter: all / odd / even", "all") || "all").trim().toLowerCase();
-  if (!["all", "odd", "even"].includes(parity)) return alert("Invalid parity.");
+  const pVals = await openSettingsDialog({
+    title: "進階列印",
+    submitText: "列印",
+    fields: [
+      { key: "range", label: "頁面範圍", type: "text", value: "all", placeholder: "all / 1-3,8 / odd / even" },
+      { key: "parity", label: "奇偶過濾", type: "select", value: "all", options: [
+        { value: "all", label: "全部" }, { value: "odd", label: "僅奇數頁" }, { value: "even", label: "僅偶數頁" },
+      ]},
+    ],
+  });
+  if (!pVals) return;
+  const rangeExpr = pVals.range || "all";
+  const parity = pVals.parity || "all";
   const idx = parseRangeExtended(rangeExpr, state.totalPages);
   const filtered = idx.filter((i) => {
     const p = i + 1;
@@ -2450,7 +2708,7 @@ async function printPdfWithOptionsPrompt() {
     if (parity === "even") return p % 2 === 0;
     return true;
   });
-  if (!filtered.length) return alert("No pages selected for print.");
+  if (!filtered.length) return alert("沒有選取要列印的頁面。");
   const out = await PDFLib.PDFDocument.create();
   const copied = await out.copyPages(state.pdfLib, filtered);
   copied.forEach((p) => out.addPage(p));
@@ -2463,14 +2721,23 @@ async function printPdfWithOptionsPrompt() {
 }
 
 async function extractPagesPrompt() {
-  if (!state.pdfLib) return alert("Open a writable PDF first.");
-  const range = prompt("Extract page range (all or 1-3,5,odd,even)", String(state.currentPage));
-  if (range == null) return;
-  const idx = parseRangeExtended(range, state.totalPages);
-  if (!idx.length) return alert("No valid pages selected.");
-  const mode = (prompt("After extract: open / download", "open") || "open").trim().toLowerCase();
-  if (!["open", "download"].includes(mode)) return alert("Invalid mode.");
-  const outName = (prompt("Output file name", `${baseName(state.fileName)}-extract.pdf`) || `${baseName(state.fileName)}-extract.pdf`).trim();
+  if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
+  const epVals = await openSettingsDialog({
+    title: "提取頁面",
+    submitText: "提取",
+    fields: [
+      { key: "range", label: "頁面範圍", type: "text", value: String(state.currentPage), placeholder: "all / 1-3,5 / odd" },
+      { key: "mode", label: "提取後動作", type: "select", value: "open", options: [
+        { value: "open", label: "在新分頁開啟" }, { value: "download", label: "下載" },
+      ]},
+      { key: "outName", label: "輸出檔名", type: "text", value: `${baseName(state.fileName)}-extract.pdf` },
+    ],
+  });
+  if (!epVals) return;
+  const idx = parseRangeExtended(epVals.range || String(state.currentPage), state.totalPages);
+  if (!idx.length) return alert("沒有選取有效頁面。");
+  const mode = epVals.mode || "open";
+  const outName = (epVals.outName || `${baseName(state.fileName)}-extract.pdf`).trim();
   const out = await PDFLib.PDFDocument.create();
   const copied = await out.copyPages(state.pdfLib, idx);
   copied.forEach((p) => out.addPage(p));
@@ -2483,7 +2750,7 @@ async function extractPagesPrompt() {
 }
 
 async function insertPagesFromExternalPdfPrompt() {
-  if (!state.pdfLib) return alert("Open a writable PDF first.");
+  if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
   const input = document.createElement("input");
   input.type = "file";
   input.accept = ".pdf,application/pdf";
@@ -2493,12 +2760,20 @@ async function insertPagesFromExternalPdfPrompt() {
       if (!file) return;
       const src = await PDFLib.PDFDocument.load(await readAndNormalizePdfFile(file), { ignoreEncryption: true });
       const srcTotal = src.getPageCount();
-      const range = prompt(`Source page range for "${file.name}" (all or 1-3,5)`, "all");
-      if (range == null) return;
-      const srcIdx = parseRangeExtended(range, srcTotal);
-      if (!srcIdx.length) return alert("No valid source pages selected.");
-      const pos = (prompt("Insert position: before / after / end", "after") || "after").trim().toLowerCase();
-      if (!["before", "after", "end"].includes(pos)) return alert("Invalid position.");
+      const ipVals = await openSettingsDialog({
+        title: `插入頁面：${file.name}`,
+        submitText: "插入",
+        fields: [
+          { key: "range", label: `來源頁面範圍（共 ${srcTotal} 頁）`, type: "text", value: "all", placeholder: "all / 1-3,5" },
+          { key: "pos", label: "插入位置", type: "select", value: "after", options: [
+            { value: "before", label: "在目前頁之前" }, { value: "after", label: "在目前頁之後" }, { value: "end", label: "文件末尾" },
+          ]},
+        ],
+      });
+      if (!ipVals) return;
+      const srcIdx = parseRangeExtended(ipVals.range || "all", srcTotal);
+      if (!srcIdx.length) return alert("沒有選取來源頁面。");
+      const pos = ipVals.pos || "after";
       let insertAt = state.pdfLib.getPageCount();
       if (pos === "before") insertAt = Math.max(0, state.currentPage - 1);
       else if (pos === "after") insertAt = Math.min(state.pdfLib.getPageCount(), state.currentPage);
@@ -2507,7 +2782,7 @@ async function insertPagesFromExternalPdfPrompt() {
       await reloadFromPdfLib();
       goToPage(insertAt + 1);
     } catch (err) {
-      alert(`Insert from PDF failed: ${err.message || err}`);
+      alert(`從 PDF 插入失敗：${err.message || err}`);
     }
   };
   input.click();
@@ -2522,11 +2797,11 @@ function getDocById(id) {
 }
 
 async function transferPagesToDocument(srcIdx, targetDocId, removeFromSource) {
-  if (!state.pdfLib) return alert("Open a writable PDF first.");
+  if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
   const target = getDocById(targetDocId);
-  if (!target) return alert("Target document not found.");
-  if (!srcIdx.length) return alert("No pages selected.");
-  if (removeFromSource && srcIdx.length >= state.totalPages) return alert("At least one page must remain in source.");
+  if (!target) return alert("找不到目標文件。");
+  if (!srcIdx.length) return alert("沒有選取頁面。");
+  if (removeFromSource && srcIdx.length >= state.totalPages) return alert("來源文件至少需保留一頁。");
 
   const targetPdf = await PDFLib.PDFDocument.load(target.bytes.slice(), { ignoreEncryption: true });
   const copied = await targetPdf.copyPages(state.pdfLib, srcIdx);
@@ -2542,20 +2817,26 @@ async function transferPagesToDocument(srcIdx, targetDocId, removeFromSource) {
     await reloadFromPdfLib();
   }
   renderDocTabs();
-  alert(`${removeFromSource ? "Moved" : "Copied"} ${srcIdx.length} page(s) to ${target.fileName}`);
+  alert(`已${removeFromSource ? "移動" : "複製"} ${srcIdx.length} 頁到「${target.fileName}」`);
 }
 
 async function transferPagesToOtherDocumentPrompt(removeFromSource) {
-  if (!state.pdfLib) return alert("Open a writable PDF first.");
+  if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
   const other = getOtherDocs();
-  if (!other.length) return alert("Need at least 2 open documents.");
-  const range = prompt("Page range to transfer (all / 1-3,5 / odd / even)", String(state.currentPage));
-  if (range == null) return;
-  const srcIdx = parseRangeExtended(range, state.totalPages);
-  if (!srcIdx.length) return alert("No valid source pages.");
-  const lines = other.map((d, i) => `${i + 1}. ${d.fileName}`).join("\n");
-  const pick = Number(prompt(`Target document number:\n${lines}`, "1"));
-  if (!Number.isFinite(pick) || pick < 1 || pick > other.length) return alert("Invalid target.");
+  if (!other.length) return alert("需要至少 2 個已開啟的文件。");
+  const tpVals = await openSettingsDialog({
+    title: removeFromSource ? "移動頁面到其他文件" : "複製頁面到其他文件",
+    submitText: removeFromSource ? "移動" : "複製",
+    fields: [
+      { key: "range", label: "頁面範圍", type: "text", value: String(state.currentPage), placeholder: "all / 1-3,5 / odd" },
+      { key: "target", label: "目標文件", type: "select", value: "0", options: other.map((d, i) => ({ value: String(i), label: d.fileName })) },
+    ],
+  });
+  if (!tpVals) return;
+  const srcIdx = parseRangeExtended(tpVals.range || String(state.currentPage), state.totalPages);
+  if (!srcIdx.length) return alert("沒有有效來源頁面。");
+  const pick = Number(tpVals.target) + 1;
+  if (!Number.isFinite(pick) || pick < 1 || pick > other.length) return alert("目標無效。");
   await transferPagesToDocument(srcIdx, other[pick - 1].id, removeFromSource);
 }
 
@@ -2566,23 +2847,34 @@ async function copyCurrentPageText() {
   const text = textContent.items.map((x) => x.str).join(" ");
   try {
     await navigator.clipboard.writeText(text);
-    alert(`Copied ${text.length} chars`);
+    alert(`已複製 ${text.length} 個字元`);
   } catch {
-    alert(text || "No extractable text");
+    alert(text || "此頁沒有可提取的文字");
   }
 }
 
 async function exportImageRegionPrompt() {
-  if (!state.pdfjs) return alert("Open a PDF first.");
+  if (!state.pdfjs) return alert("請先開啟 PDF。");
   const canvas = $("pages").querySelector(`.pw[data-page="${state.currentPage}"] canvas`);
-  if (!canvas) return alert("Page canvas not found.");
+  if (!canvas) return alert("找不到頁面畫布。");
   const dW = canvas.width;
   const dH = canvas.height;
-  const x = Number(prompt(`Region X (0-${dW - 1})`, "0"));
-  const y = Number(prompt(`Region Y (0-${dH - 1})`, "0"));
-  const w = Number(prompt("Region width", String(Math.max(1, Math.floor(dW / 2)))));
-  const h = Number(prompt("Region height", String(Math.max(1, Math.floor(dH / 2)))));
-  if (![x, y, w, h].every((n) => Number.isFinite(n))) return alert("Invalid numeric values.");
+  const erVals = await openSettingsDialog({
+    title: "匯出頁面區域圖片",
+    submitText: "匯出",
+    fields: [
+      { key: "x", label: `區域 X（0～${dW-1}）`, type: "number", value: "0", min: "0", step: "1" },
+      { key: "y", label: `區域 Y（0～${dH-1}）`, type: "number", value: "0", min: "0", step: "1" },
+      { key: "w", label: "寬度（像素）", type: "number", value: String(Math.max(1, Math.floor(dW / 2))), min: "1", step: "1" },
+      { key: "h", label: "高度（像素）", type: "number", value: String(Math.max(1, Math.floor(dH / 2))), min: "1", step: "1" },
+    ],
+  });
+  if (!erVals) return;
+  const x = Number(erVals.x);
+  const y = Number(erVals.y);
+  const w = Number(erVals.w);
+  const h = Number(erVals.h);
+  if (![x, y, w, h].every((n) => Number.isFinite(n))) return alert("數值無效。");
   const rx = Math.max(0, Math.min(dW - 1, Math.floor(x)));
   const ry = Math.max(0, Math.min(dH - 1, Math.floor(y)));
   const rw = Math.max(1, Math.min(dW - rx, Math.floor(w)));
@@ -2593,7 +2885,7 @@ async function exportImageRegionPrompt() {
   const ctx = out.getContext("2d");
   ctx.drawImage(canvas, rx, ry, rw, rh, 0, 0, rw, rh);
   out.toBlob((blob) => {
-    if (!blob) return alert("Export region failed.");
+    if (!blob) return alert("匯出區域失敗。");
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -2604,7 +2896,7 @@ async function exportImageRegionPrompt() {
 }
 
 async function insertImagePrompt() {
-  if (!state.pdfLib) return alert("Open a writable PDF first.");
+  if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
   const input = document.createElement("input");
   input.type = "file";
   input.accept = "image/png,image/jpeg,image/jpg";
@@ -2614,11 +2906,22 @@ async function insertImagePrompt() {
       if (!file) return;
       const page = state.pdfLib.getPage(state.currentPage - 1);
       const s = page.getSize();
-      const x = Number(prompt("Image X (pt)", "60"));
-      const yTop = Number(prompt("Image Y from top (pt)", "120"));
-      const w = Number(prompt("Image width (pt)", "180"));
-      const h = Number(prompt("Image height (pt)", "120"));
-      if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n > 0)) return alert("Invalid geometry.");
+      const iiVals = await openSettingsDialog({
+        title: `插入圖片：${file.name}`,
+        submitText: "插入",
+        fields: [
+          { key: "x", label: "X（pt）", type: "number", value: "60", min: "0", step: "1" },
+          { key: "yTop", label: "Y 從頂端（pt）", type: "number", value: "120", min: "0", step: "1" },
+          { key: "w", label: "寬（pt）", type: "number", value: "180", min: "1", step: "1" },
+          { key: "h", label: "高（pt）", type: "number", value: "120", min: "1", step: "1" },
+        ],
+      });
+      if (!iiVals) return;
+      const x = Number(iiVals.x);
+      const yTop = Number(iiVals.yTop);
+      const w = Number(iiVals.w);
+      const h = Number(iiVals.h);
+      if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n > 0)) return alert("幾何數值無效。");
       const y = s.height - yTop - h;
       const ext = file.name.toLowerCase();
       const bytes = await file.arrayBuffer();
@@ -2628,21 +2931,30 @@ async function insertImagePrompt() {
       page.drawImage(img, { x, y, width: w, height: h });
       await reloadFromPdfLib();
     } catch (err) {
-      alert(`Insert image failed: ${err.message || err}`);
+      alert(`插入圖片失敗：${err.message || err}`);
     }
   };
   input.click();
 }
 
 async function extractImagesPrompt() {
-  if (!state.pdfjs) return alert("Open a PDF first.");
-  const range = prompt("Extract rendered page images range (all or 1-3,5)", "all");
-  if (range == null) return;
-  const idx = parseRangeExtended(range, state.totalPages);
-  if (!idx.length) return alert("No valid pages.");
-  const fmt = (prompt("Format: png / jpg", "png") || "png").trim().toLowerCase();
-  const scale = Math.max(0.5, Math.min(4, Number(prompt("Scale factor (0.5-4)", "2")) || 2));
-  const jpgQ = Math.max(0.4, Math.min(0.98, Number(prompt("JPG quality (0.4-0.98)", "0.86")) || 0.86));
+  if (!state.pdfjs) return alert("請先開啟 PDF。");
+  const eiVals = await openSettingsDialog({
+    title: "提取頁面圖片",
+    submitText: "提取並下載",
+    fields: [
+      { key: "range", label: "頁面範圍", type: "text", value: "all", placeholder: "all / 1-3,5" },
+      { key: "fmt", label: "格式", type: "select", value: "png", options: [{ value: "png", label: "PNG" }, { value: "jpg", label: "JPG" }] },
+      { key: "scale", label: "縮放係數（0.5～4）", type: "number", value: "2", min: "0.5", max: "4", step: "0.5" },
+      { key: "jpgQ", label: "JPG 品質（0.4～0.98）", type: "number", value: "0.86", min: "0.4", max: "0.98", step: "0.02" },
+    ],
+  });
+  if (!eiVals) return;
+  const idx = parseRangeExtended(eiVals.range || "all", state.totalPages);
+  if (!idx.length) return alert("沒有有效頁面。");
+  const fmt = (eiVals.fmt || "png").trim().toLowerCase();
+  const scale = Math.max(0.5, Math.min(4, Number(eiVals.scale) || 2));
+  const jpgQ = Math.max(0.4, Math.min(0.98, Number(eiVals.jpgQ) || 0.86));
   const zip = new JSZip();
   for (const i of idx) {
     const p = i + 1;
@@ -2667,20 +2979,32 @@ async function extractImagesPrompt() {
 }
 
 async function replaceImageRegionPrompt() {
-  if (!state.pdfLib) return alert("Open a writable PDF first.");
+  if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
   const input = document.createElement("input");
   input.type = "file";
   input.accept = "image/png,image/jpeg,image/jpg,image/webp";
   input.onchange = async () => {
     const file = input.files?.[0];
     if (!file) return;
-    const pageNum = Number(prompt("Target page number", String(state.currentPage)));
-    if (!Number.isFinite(pageNum) || pageNum < 1 || pageNum > state.totalPages) return alert("Invalid page.");
-    const x = Number(prompt("Region X (pt, left)", "60"));
-    const yTop = Number(prompt("Region Y from top (pt)", "120"));
-    const w = Number(prompt("Region width (pt)", "180"));
-    const h = Number(prompt("Region height (pt)", "120"));
-    if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n > 0)) return alert("Invalid geometry.");
+    const riVals = await openSettingsDialog({
+      title: `替換圖片區域：${file.name}`,
+      submitText: "替換",
+      fields: [
+        { key: "page", label: "目標頁碼", type: "number", value: String(state.currentPage), min: "1", step: "1" },
+        { key: "x", label: "區域 X（pt）", type: "number", value: "60", min: "0", step: "1" },
+        { key: "yTop", label: "區域 Y 從頂端（pt）", type: "number", value: "120", min: "0", step: "1" },
+        { key: "w", label: "寬（pt）", type: "number", value: "180", min: "1", step: "1" },
+        { key: "h", label: "高（pt）", type: "number", value: "120", min: "1", step: "1" },
+      ],
+    });
+    if (!riVals) return;
+    const pageNum = Number(riVals.page);
+    if (!Number.isFinite(pageNum) || pageNum < 1 || pageNum > state.totalPages) return alert("頁碼無效。");
+    const x = Number(riVals.x);
+    const yTop = Number(riVals.yTop);
+    const w = Number(riVals.w);
+    const h = Number(riVals.h);
+    if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n > 0)) return alert("幾何數值無效。");
     const page = state.pdfLib.getPage(pageNum - 1);
     const s = page.getSize();
     const y = s.height - yTop - h;
@@ -2721,21 +3045,32 @@ function pickStampImageAndActivate() {
       state.stampImageDataUrl = String(reader.result || "");
       state.activeTool = "stampImage";
       renderToolbar();
-      alert("Stamp image loaded. Click on page to place.");
+      showToast("印章圖片已載入，點擊頁面放置。");
     };
     reader.readAsDataURL(file);
   };
   input.click();
 }
 
-function openStampManagerPrompt() {
-  const action = (prompt("Stamp manager: use / save / delete / list", "list") || "").trim().toLowerCase();
+async function openStampManagerPrompt() {
+  const smVals = await openSettingsDialog({
+    title: "印章管理",
+    submitText: "執行",
+    fields: [{ key: "action", label: "動作", type: "select", value: "list", options: [
+      { value: "list", label: "列出預設印章" },
+      { value: "use", label: "使用選取的預設" },
+      { value: "save", label: "儲存目前印章為預設" },
+      { value: "delete", label: "刪除選取的預設" },
+    ]}],
+  });
+  if (!smVals) return;
+  const action = smVals.action || "list";
   if (action === "use") return applySelectedStampPreset();
   if (action === "save") return saveCurrentStampAsPreset();
   if (action === "delete") return deleteSelectedStampPreset();
   if (action === "list") {
     const lines = (state.stampPresets || []).map((x, i) => `${i + 1}. ${x.name}`).join("\n");
-    alert(lines || "No presets");
+    alert(lines || "目前沒有印章預設");
   }
 }
 
@@ -2761,11 +3096,18 @@ function sliceImageVertical(img, index, total) {
 }
 
 async function applyCrossPageSealPrompt() {
-  if (!state.pdfjs) return alert("Open a PDF first.");
-  const range = prompt("Cross-seal page range (e.g. 2-5)", `${state.currentPage}-${Math.min(state.totalPages, state.currentPage + 1)}`);
-  if (range == null) return;
-  const idx = parseRangeExtended(range, state.totalPages);
-  if (!idx.length) return alert("No valid pages.");
+  if (!state.pdfjs) return alert("請先開啟 PDF。");
+  const csVals = await openSettingsDialog({
+    title: "騎縫章",
+    submitText: "選擇圖片",
+    message: "設定後將提示您選擇騎縫章圖片檔案",
+    fields: [
+      { key: "range", label: "頁面範圍（例如 2-5）", type: "text", value: `${state.currentPage}-${Math.min(state.totalPages, state.currentPage + 1)}` },
+    ],
+  });
+  if (!csVals) return;
+  const idx = parseRangeExtended(csVals.range || String(state.currentPage), state.totalPages);
+  if (!idx.length) return alert("沒有有效頁面。");
   const input = document.createElement("input");
   input.type = "file";
   input.accept = "image/png,image/jpeg,image/jpg,image/webp";
@@ -2795,22 +3137,26 @@ async function applyCrossPageSealPrompt() {
           redrawAllAnnotationLayers();
           saveSnapshot();
         } catch (err2) {
-          alert(`Cross-page seal failed: ${err2.message || err2}`);
+          alert(`騎縫章失敗：${err2.message || err2}`);
         }
       };
       r.readAsDataURL(file);
     } catch (err) {
-      alert(`Cross-page seal failed: ${err.message || err}`);
+      alert(`騎縫章失敗：${err.message || err}`);
     }
   };
   input.click();
 }
 
-function promptFind() {
+async function promptFind() {
   if (!state.pdfjs) return;
-  const q = prompt("Find text", "");
-  if (!q) return;
-  searchAll(q);
+  const fVals = await openSettingsDialog({
+    title: "搜尋文字",
+    submitText: "搜尋",
+    fields: [{ key: "q", label: "搜尋關鍵字", type: "text", value: "" }],
+  });
+  if (!fVals || !fVals.q.trim()) return;
+  searchAll(fVals.q.trim());
 }
 
 async function searchAll(query) {
@@ -2833,13 +3179,13 @@ async function searchAll(query) {
   }
   if (!state.searchHits.length) {
     renderSearchHitPanel();
-    alert("No matches");
+    alert("沒有符合結果");
     return;
   }
   state.searchCursor = 0;
   renderSearchHitPanel();
   goToPage(state.searchHits[0]);
-  alert(`Found in ${state.searchHits.length} page(s). Ctrl+G for next.`);
+  alert(`在 ${state.searchHits.length} 頁找到符合結果，按 Ctrl+G 前往下一個。`);
 }
 
 function findNext() {
@@ -2888,7 +3234,7 @@ function openContextMenu(x, y) {
     ["提取頁面", () => extractPagesPrompt()],
     ["複製頁面到其他文件", () => transferPagesToOtherDocumentPrompt(false)],
     ["移動頁面到其他文件", () => transferPagesToOtherDocumentPrompt(true)],
-    ["框選裁切目前頁", () => { if (!state.pdfLib) return alert("Open a writable PDF first."); state.activeTool = "crop"; renderToolbar(); showToast("在頁面上拖曳以框選裁切區域，確認後點「套用裁切」", "info", 3500); }],
+    ["框選裁切目前頁", () => { if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。"); setActiveTool("crop"); showToast("在頁面上拖曳框選要保留的區域，確認後點「套用裁切」", "info", 3500); }],
     ["範圍裁切", () => cropPagesByRangePrompt()],
     ["設定 Crop/Trim/Bleed", () => setPageBoxesPrompt()],
     ["刪除頁面", () => deleteCurrentPage()],
@@ -2998,16 +3344,27 @@ function renderWizard() {
 }
 
 async function applyAdvancedWatermarkPrompt() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const text = prompt("Watermark text", "CONFIDENTIAL");
-  if (!text) return;
-  const rangeInput = prompt("Page range (all or 1-3,5)", "all") || "all";
-  const opacity = Number(prompt("Opacity (0.05 - 1.0)", "0.18"));
-  const angle = Number(prompt("Angle (degrees)", "35"));
-  const fontSize = Number(prompt("Font size", "34"));
-  const pages = parseAnnotationRangeInput(rangeInput);
-  if (!pages.length) return alert("No valid pages.");
-  pages.forEach((pNum) => {
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  const vals = await openSettingsDialog({
+    title: "浮水印設定",
+    submitText: "套用浮水印",
+    fields: [
+      { key: "text", label: "浮水印文字", type: "text", value: "機密文件" },
+      { key: "range", label: "頁面範圍", type: "text", value: "all", placeholder: "all / 1-3,5 / odd" },
+      { key: "opacity", label: "透明度（0.05～1.0）", type: "number", value: "0.18", min: "0.05", step: "0.01" },
+      { key: "angle", label: "傾斜角度（度）", type: "number", value: "35", step: "1" },
+      { key: "fontSize", label: "字體大小", type: "number", value: "34", min: "6", step: "1" },
+    ],
+  });
+  if (!vals || !vals.text.trim()) return;
+  const text = vals.text.trim();
+  const rangeInput = vals.range || "all";
+  const opacity = Number(vals.opacity);
+  const angle = Number(vals.angle);
+  const fontSize = Number(vals.fontSize);
+  const wPages = parseAnnotationRangeInput(rangeInput);
+  if (!wPages.length) return alert("沒有有效頁面。");
+  wPages.forEach((pNum) => {
     const p = state.pdfLib.getPage(pNum - 1);
     const s = p.getSize();
     p.drawText(text, {
@@ -3022,14 +3379,28 @@ async function applyAdvancedWatermarkPrompt() {
 }
 
 async function applyPageNumbersPrompt() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const rangeInput = prompt("Page range (all or 1-3,5)", "all") || "all";
-  const startNo = Number(prompt("Start number", "1"));
-  const pos = (prompt("Position: tl/tr/bl/br", "br") || "br").toLowerCase();
-  const size = Number(prompt("Font size", "12"));
-  const pages = parseAnnotationRangeInput(rangeInput);
-  if (!pages.length) return alert("No valid pages.");
-  pages.forEach((pNum, idx) => {
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  const vals = await openSettingsDialog({
+    title: "頁碼設定",
+    submitText: "套用頁碼",
+    fields: [
+      { key: "range", label: "頁面範圍", type: "text", value: "all", placeholder: "all / 1-3,5 / odd" },
+      { key: "startNo", label: "起始頁碼", type: "number", value: "1", min: "1", step: "1" },
+      { key: "pos", label: "位置", type: "select", value: "br", options: [
+        { value: "tl", label: "左上" }, { value: "tr", label: "右上" },
+        { value: "bl", label: "左下" }, { value: "br", label: "右下" },
+      ]},
+      { key: "size", label: "字體大小", type: "number", value: "12", min: "6", step: "1" },
+    ],
+  });
+  if (!vals) return;
+  const rangeInput = vals.range || "all";
+  const startNo = Number(vals.startNo);
+  const pos = vals.pos || "br";
+  const size = Number(vals.size);
+  const pnPages = parseAnnotationRangeInput(rangeInput);
+  if (!pnPages.length) return alert("沒有有效頁面。");
+  pnPages.forEach((pNum, idx) => {
     const page = state.pdfLib.getPage(pNum - 1);
     const s = page.getSize();
     const label = String((Number.isFinite(startNo) ? startNo : 1) + idx);
@@ -3051,9 +3422,26 @@ async function applyPageNumbersPrompt() {
   await reloadFromPdfLib();
 }
 
-function configurePageLabelsPrompt() {
-  if (!state.pdfjs) return alert("Open a PDF first.");
-  const mode = (prompt("Page labels: clear / decimal / roman-lower / roman-upper / prefix", "decimal") || "decimal").trim().toLowerCase();
+async function configurePageLabelsPrompt() {
+  if (!state.pdfjs) return alert("請先開啟 PDF。");
+  const vals = await openSettingsDialog({
+    title: "頁面標籤設定",
+    submitText: "套用",
+    fields: [
+      { key: "mode", label: "標籤模式", type: "select", value: "decimal", options: [
+        { value: "clear", label: "清除頁籤" },
+        { value: "decimal", label: "阿拉伯數字（1,2,3…）" },
+        { value: "roman-lower", label: "小寫羅馬（i,ii,iii…）" },
+        { value: "roman-upper", label: "大寫羅馬（I,II,III…）" },
+        { value: "prefix", label: "自訂前綴" },
+      ]},
+      { key: "range", label: "頁面範圍", type: "text", value: "all", placeholder: "all / 1-10" },
+      { key: "start", label: "起始值", type: "number", value: "1", min: "1", step: "1" },
+      { key: "prefix", label: "前綴文字（僅限「自訂前綴」模式）", type: "text", value: "A-" },
+    ],
+  });
+  if (!vals) return;
+  const mode = vals.mode || "decimal";
   if (mode === "clear") {
     state.pageLabelRules = [];
     renderThumbnails();
@@ -3061,17 +3449,13 @@ function configurePageLabelsPrompt() {
     persistRecoveryForFile();
     return;
   }
-  if (!["decimal", "roman-lower", "roman-upper", "prefix"].includes(mode)) return alert("Invalid mode.");
-  const range = prompt("Label range (all or 1-10)", "all");
-  if (range == null) return;
-  const idx = parseRangeExtended(range, state.totalPages);
-  if (!idx.length) return alert("No valid pages.");
+  const idx = parseRangeExtended(vals.range || "all", state.totalPages);
+  if (!idx.length) return alert("沒有有效頁面。");
   const from = Math.min(...idx) + 1;
   const to = Math.max(...idx) + 1;
-  const start = Number(prompt("Start value", "1"));
-  if (!Number.isFinite(start) || start < 1) return alert("Invalid start value.");
-  let prefix = "";
-  if (mode === "prefix") prefix = prompt("Prefix text", "A-") ?? "A-";
+  const start = Number(vals.start);
+  if (!Number.isFinite(start) || start < 1) return alert("起始值無效。");
+  const prefix = mode === "prefix" ? (vals.prefix || "A-") : "";
   state.pageLabelRules = (state.pageLabelRules || []).filter((r) => to < r.from || from > r.to);
   state.pageLabelRules.push({ from, to, style: mode, start: Math.floor(start), prefix });
   state.pageLabelRules.sort((a, b) => a.from - b.from);
@@ -3081,18 +3465,31 @@ function configurePageLabelsPrompt() {
 }
 
 async function applyHeaderFooterPrompt() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const template = prompt("Header/Footer template. Variables: {page} {total} {date}", "{page}/{total}  {date}");
-  if (template == null) return;
-  const rangeInput = prompt("Page range (all or 1-3,5)", "all") || "all";
-  const position = (prompt("Position: top-left / top-right / bottom-left / bottom-right", "top-right") || "top-right").toLowerCase();
-  const size = Number(prompt("Font size", "10"));
-  const pages = parseAnnotationRangeInput(rangeInput);
-  if (!pages.length) return alert("No valid pages.");
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  const vals = await openSettingsDialog({
+    title: "頁首/頁尾設定",
+    submitText: "套用",
+    fields: [
+      { key: "template", label: "範本（可用 {page} {total} {date}）", type: "text", value: "{page}/{total}  {date}" },
+      { key: "range", label: "頁面範圍", type: "text", value: "all", placeholder: "all / 1-3,5 / odd" },
+      { key: "position", label: "位置", type: "select", value: "top-right", options: [
+        { value: "top-left", label: "頂端左側" }, { value: "top-right", label: "頂端右側" },
+        { value: "bottom-left", label: "底端左側" }, { value: "bottom-right", label: "底端右側" },
+      ]},
+      { key: "size", label: "字體大小", type: "number", value: "10", min: "6", step: "1" },
+    ],
+  });
+  if (!vals) return;
+  const template = vals.template ?? "";
+  const rangeInput = vals.range || "all";
+  const position = vals.position || "top-right";
+  const size = Number(vals.size);
+  const hfPages = parseAnnotationRangeInput(rangeInput);
+  if (!hfPages.length) return alert("沒有有效頁面。");
 
   const total = state.totalPages;
   const dateStr = new Date().toISOString().slice(0, 10);
-  pages.forEach((pNum) => {
+  hfPages.forEach((pNum) => {
     const page = state.pdfLib.getPage(pNum - 1);
     const s = page.getSize();
     const text = template
@@ -3118,12 +3515,24 @@ async function applyHeaderFooterPrompt() {
 }
 
 async function editMetadataPrompt() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const title = prompt("Title", "") ?? "";
-  const author = prompt("Author", "") ?? "";
-  const subject = prompt("Subject", "") ?? "";
-  const keywordsRaw = prompt("Keywords (comma-separated)", "") ?? "";
-  const producer = prompt("Producer", "Offline PDF Studio") ?? "Offline PDF Studio";
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  const vals = await openSettingsDialog({
+    title: "編輯 PDF 中繼資料",
+    submitText: "套用",
+    fields: [
+      { key: "title", label: "標題", type: "text", value: "" },
+      { key: "author", label: "作者", type: "text", value: "" },
+      { key: "subject", label: "主旨", type: "text", value: "" },
+      { key: "keywords", label: "關鍵字（逗號分隔）", type: "text", value: "" },
+      { key: "producer", label: "製作程式", type: "text", value: "Offline PDF Studio" },
+    ],
+  });
+  if (!vals) return;
+  const title = vals.title ?? "";
+  const author = vals.author ?? "";
+  const subject = vals.subject ?? "";
+  const keywordsRaw = vals.keywords ?? "";
+  const producer = vals.producer ?? "Offline PDF Studio";
 
   state.pdfLib.setTitle(title);
   state.pdfLib.setAuthor(author);
@@ -3140,16 +3549,29 @@ async function editMetadataPrompt() {
 }
 
 async function addHyperlinkPrompt() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const pNum = Number(prompt("Target page number", String(state.currentPage)));
-  if (!Number.isFinite(pNum) || pNum < 1 || pNum > state.totalPages) return alert("Invalid page number.");
-  const url = (prompt("URL (https://...)", "https://") || "").trim();
-  if (!/^https?:\/\//i.test(url)) return alert("Invalid URL.");
-  const x = Number(prompt("Rectangle X (pt, left origin)", "50"));
-  const yTop = Number(prompt("Rectangle Y from top (pt)", "50"));
-  const w = Number(prompt("Rectangle width (pt)", "240"));
-  const h = Number(prompt("Rectangle height (pt)", "28"));
-  if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n > 0)) return alert("Invalid rectangle values.");
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  const vals = await openSettingsDialog({
+    title: "新增超連結",
+    submitText: "插入",
+    fields: [
+      { key: "page", label: "目標頁碼", type: "number", value: String(state.currentPage), min: "1", step: "1" },
+      { key: "url", label: "URL（https://...）", type: "text", value: "https://", placeholder: "https://example.com" },
+      { key: "x", label: "矩形 X（pt）", type: "number", value: "50", min: "0", step: "1" },
+      { key: "yTop", label: "矩形 Y 從頂端（pt）", type: "number", value: "50", min: "0", step: "1" },
+      { key: "w", label: "矩形寬（pt）", type: "number", value: "240", min: "1", step: "1" },
+      { key: "h", label: "矩形高（pt）", type: "number", value: "28", min: "1", step: "1" },
+    ],
+  });
+  if (!vals) return;
+  const pNum = Number(vals.page);
+  if (!Number.isFinite(pNum) || pNum < 1 || pNum > state.totalPages) return alert("頁碼無效。");
+  const url = (vals.url || "").trim();
+  if (!/^https?:\/\//i.test(url)) return alert("URL 格式無效。");
+  const x = Number(vals.x);
+  const yTop = Number(vals.yTop);
+  const w = Number(vals.w);
+  const h = Number(vals.h);
+  if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n > 0)) return alert("矩形數值無效。");
 
   const page = state.pdfLib.getPage(pNum - 1);
   const s = page.getSize();
@@ -3193,22 +3615,41 @@ async function addHyperlinkPrompt() {
     page.drawText(url.slice(0, 80), { x: x + 4, y: y + h / 2 - 5, size: 10 });
     await reloadFromPdfLib();
   } catch (err) {
-    alert(`Failed to add link annotation: ${err.message}`);
+    alert(`新增連結失敗：${err.message}`);
   }
 }
 
 async function addFormFieldPrompt() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const type = (prompt("Form field type: text / checkbox / radio / dropdown / signature", "text") || "text").trim().toLowerCase();
-  const name = (prompt("Field name", `field_${Date.now()}`) || "").trim();
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  const vals = await openSettingsDialog({
+    title: "新增表單欄位",
+    submitText: "新增",
+    fields: [
+      { key: "type", label: "欄位類型", type: "select", value: "text", options: [
+        { value: "text", label: "文字框" }, { value: "checkbox", label: "勾選框" },
+        { value: "radio", label: "單選（radio）" }, { value: "dropdown", label: "下拉選單" },
+        { value: "signature", label: "簽名欄" },
+      ]},
+      { key: "name", label: "欄位名稱", type: "text", value: `field_${Date.now()}` },
+      { key: "opts", label: "選項（radio/下拉，逗號分隔）", type: "text", value: "A,B,C" },
+      { key: "page", label: "目標頁碼", type: "number", value: String(state.currentPage), min: "1", step: "1" },
+      { key: "x", label: "X（pt）", type: "number", value: "60", min: "0", step: "1" },
+      { key: "yTop", label: "Y 從頂端（pt）", type: "number", value: "120", min: "0", step: "1" },
+      { key: "w", label: "寬（pt）", type: "number", value: "180", min: "1", step: "1" },
+      { key: "h", label: "高（pt）", type: "number", value: "24", min: "1", step: "1" },
+    ],
+  });
+  if (!vals) return;
+  const type = (vals.type || "text").trim().toLowerCase();
+  const name = (vals.name || "").trim();
   if (!name) return;
-  const pageNum = Number(prompt("Target page number", String(state.currentPage)));
-  if (!Number.isFinite(pageNum) || pageNum < 1 || pageNum > state.totalPages) return alert("Invalid page.");
-  const x = Number(prompt("X (pt)", "60"));
-  const yTop = Number(prompt("Y from top (pt)", "120"));
-  const w = Number(prompt("Width (pt)", "180"));
-  const h = Number(prompt("Height (pt)", "24"));
-  if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n > 0)) return alert("Invalid geometry.");
+  const pageNum = Number(vals.page);
+  if (!Number.isFinite(pageNum) || pageNum < 1 || pageNum > state.totalPages) return alert("頁碼無效。");
+  const x = Number(vals.x);
+  const yTop = Number(vals.yTop);
+  const w = Number(vals.w);
+  const h = Number(vals.h);
+  if (![x, yTop, w, h].every((n) => Number.isFinite(n) && n > 0)) return alert("幾何數值無效。");
 
   const page = state.pdfLib.getPage(pageNum - 1);
   const s = page.getSize();
@@ -3218,11 +3659,8 @@ async function addFormFieldPrompt() {
     const cb = form.createCheckBox(name);
     cb.addToPage(page, { x, y, width: w, height: h });
   } else if (type === "radio") {
-    const opts = (prompt("Radio options (comma separated)", "A,B,C") || "A,B,C")
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean);
-    if (!opts.length) return alert("No radio options.");
+    const opts = (vals.opts || "A,B,C").split(",").map((o) => o.trim()).filter(Boolean);
+    if (!opts.length) return alert("沒有選項（radio）。");
     const rg = form.createRadioGroup(name);
     const eachH = Math.max(14, Math.floor(h / opts.length));
     opts.forEach((opt, i) => {
@@ -3230,11 +3668,8 @@ async function addFormFieldPrompt() {
       page.drawText(opt, { x: x + 18, y: y + (opts.length - 1 - i) * eachH + 1, size: 10 });
     });
   } else if (type === "dropdown") {
-    const opts = (prompt("Dropdown options (comma separated)", "Option1,Option2") || "Option1,Option2")
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean);
-    if (!opts.length) return alert("No dropdown options.");
+    const opts = (vals.opts || "Option1,Option2").split(",").map((o) => o.trim()).filter(Boolean);
+    if (!opts.length) return alert("沒有選項（下拉）。");
     const dd = form.createDropdown(name);
     dd.setOptions(opts);
     dd.select(opts[0]);
@@ -3253,1644 +3688,337 @@ async function addFormFieldPrompt() {
 }
 
 async function fillFormPrompt() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
   const form = state.pdfLib.getForm();
   const fields = form.getFields();
-  if (!fields.length) return alert("No form fields.");
+  if (!fields.length) return alert("沒有表單欄位。");
   const hint = fields.map((f) => `${f.getName()}=`).join("\n");
-  const input = prompt("Fill fields using key=value per line\nCheckbox: true/false", hint);
-  if (input == null) return;
-  const kv = {};
-  input
-    .split("\n")
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .forEach((line) => {
-      const i = line.indexOf("=");
-      if (i < 0) return;
-      kv[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-    });
-  fields.forEach((f) => {
-    const name = f.getName();
-    if (!(name in kv)) return;
-    const value = kv[name];
-    const typeName = f.constructor.name;
-    if (typeName.includes("CheckBox")) {
-      if (/^(1|true|yes|on)$/i.test(value)) f.check();
-      else f.uncheck();
-    } else if (typeName.includes("RadioGroup")) {
-      f.select(value);
-    } else if (typeName.includes("TextField")) {
-      f.setText(value);
-    } else if (typeName.includes("Dropdown") || typeName.includes("OptionList")) {
-      f.select(value);
-    }
+  const ffVals = await openSettingsDialog({
+    title: "填寫表單欄位",
+    submitText: "填入",
+    fields: [{ key: "raw", label: "欄位值（field=value 每行一組）", type: "textarea", value: hint, placeholder: hint }],
+  });
+  if (!ffVals) return;
+  const lines = ffVals.raw.split("\n").map(l => l.trim()).filter(Boolean);
+  lines.forEach(line => {
+    const eq = line.indexOf("=");
+    if (eq < 1) return;
+    const fname = line.slice(0, eq).trim();
+    const fval = line.slice(eq + 1);
+    try {
+      const field = form.getField(fname);
+      if (field.constructor.name === "PDFCheckBox") { fval.trim().toLowerCase() === "true" ? field.check() : field.uncheck(); }
+      else if (field.getText !== undefined) { field.setText(fval); }
+    } catch { /* skip unknown fields */ }
   });
   await reloadFromPdfLib();
 }
 
-function exportFormDataFromFields(fields) {
-  const out = {};
-  fields.forEach((f) => {
-    const name = f.getName();
-    const typeName = f.constructor.name;
-    try {
-      if (typeName.includes("CheckBox")) out[name] = f.isChecked();
-      else if (typeName.includes("RadioGroup")) out[name] = f.getSelected?.() ?? "";
-      else if (typeof f.getText === "function") out[name] = f.getText();
-      else out[name] = "(unsupported field type)";
-    } catch {
-      out[name] = "(read failed)";
-    }
-  });
-  return out;
-}
-
-function exportFormDataJson() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const form = state.pdfLib.getForm();
-  const fields = form.getFields();
-  if (!fields.length) return alert("No form fields.");
-  const out = exportFormDataFromFields(fields);
-  const bytes = new TextEncoder().encode(JSON.stringify(out, null, 2));
-  const blob = new Blob([bytes], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `form-data-${Date.now()}.json`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
-function exportFormDataCsv() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const form = state.pdfLib.getForm();
-  const fields = form.getFields();
-  if (!fields.length) return alert("No form fields.");
-  const out = exportFormDataFromFields(fields);
-  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const lines = ["name,value"];
-  Object.entries(out).forEach(([k, v]) => lines.push(`${esc(k)},${esc(v)}`));
-  const blob = new Blob([new TextEncoder().encode(lines.join("\n"))], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `form-data-${Date.now()}.csv`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
-function exportFormDataXfdf() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const form = state.pdfLib.getForm();
-  const fields = form.getFields();
-  if (!fields.length) return alert("No form fields.");
-  const out = exportFormDataFromFields(fields);
-  const esc = (s) =>
-    String(s ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  const body = Object.entries(out)
-    .map(([k, v]) => `<field name="${esc(k)}"><value>${esc(v)}</value></field>`)
-    .join("");
-  const xfdf = `<?xml version="1.0" encoding="UTF-8"?><xfdf xmlns="http://ns.adobe.com/xfdf/" xml:space="preserve"><fields>${body}</fields></xfdf>`;
-  const blob = new Blob([new TextEncoder().encode(xfdf)], { type: "application/vnd.adobe.xfdf" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `form-data-${Date.now()}.xfdf`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
-function parseCsvFormData(text) {
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return {};
-  const out = {};
-  for (let i = 1; i < lines.length; i += 1) {
-    const m = lines[i].match(/^"((?:[^"]|"")*)","((?:[^"]|"")*)"$/);
-    if (!m) continue;
-    const k = m[1].replace(/""/g, '"');
-    const v = m[2].replace(/""/g, '"');
-    out[k] = v;
-  }
-  return out;
-}
-
-function parseXfdfFormData(text) {
-  const out = {};
-  const re = /<field\s+name="([^"]+)">[\s\S]*?<value>([\s\S]*?)<\/value>[\s\S]*?<\/field>/gi;
-  let m;
-  while ((m = re.exec(text))) {
-    out[m[1]] = m[2].replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-  }
-  return out;
-}
-
-async function importFormDataPrompt() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".json,.csv,.xfdf,application/json,text/csv,application/xml,text/xml";
-  input.onchange = async () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    const text = await file.text();
-    let kv = {};
-    const lower = file.name.toLowerCase();
-    try {
-      if (lower.endsWith(".json")) kv = JSON.parse(text);
-      else if (lower.endsWith(".csv")) kv = parseCsvFormData(text);
-      else if (lower.endsWith(".xfdf") || lower.endsWith(".xml")) kv = parseXfdfFormData(text);
-      else return alert("Unsupported form data format.");
-    } catch (err) {
-      return alert(`Import parse failed: ${err.message || err}`);
-    }
-    const form = state.pdfLib.getForm();
-    const fields = form.getFields();
-    fields.forEach((f) => {
-      const name = f.getName();
-      if (!(name in kv)) return;
-      const value = kv[name];
-      const typeName = f.constructor.name;
-      try {
-        if (typeName.includes("CheckBox")) {
-          if (/^(1|true|yes|on)$/i.test(String(value))) f.check();
-          else f.uncheck();
-        } else if (typeName.includes("RadioGroup")) {
-          f.select(String(value));
-        } else if (typeName.includes("Dropdown") || typeName.includes("OptionList")) {
-          f.select(String(value));
-        } else if (typeName.includes("TextField")) {
-          f.setText(String(value));
-        }
-      } catch {
-        // Skip invalid values to keep import resilient.
-      }
-    });
-    await reloadFromPdfLib();
-  };
-  input.click();
-}
-
-async function showXfaInfo() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
+function getShortcuts() {
   try {
-    const bytes = await state.pdfLib.save();
-    const probe = new TextDecoder("latin1").decode(bytes.slice(0, Math.min(bytes.length, 400000)));
-    const hasXfa = /\/XFA\b/.test(probe);
-    alert(hasXfa ? "XFA marker detected (limited support in browser editor)." : "No XFA marker detected.");
-  } catch {
-    alert("Unable to inspect XFA info.");
-  }
+    const overrides = JSON.parse(localStorage.getItem(SHORTCUTS_KEY) || "{}");
+    return Object.assign({}, DEFAULT_SHORTCUTS, overrides);
+  } catch { return Object.assign({}, DEFAULT_SHORTCUTS); }
+}
+
+async function editShortcutBindings() {
+  const currentMap = getShortcuts();
+  const hint = Object.entries(currentMap).map(([k, v]) => `${k}=${v}`).join("\n");
+  const scVals = await openSettingsDialog({
+    title: "快捷鍵設定",
+    submitText: "儲存",
+    fields: [{ key: "raw", label: "快捷鍵（action=key 每行一組，例如 save=Ctrl+S）", type: "textarea", value: hint }],
+  });
+  if (!scVals) return;
+  const lines = scVals.raw.split("\n").map(l => l.trim()).filter(Boolean);
+  const out = {};
+  lines.forEach(line => { const i = line.indexOf("="); if (i > 0) out[line.slice(0,i).trim()] = line.slice(i+1).trim(); });
+  localStorage.setItem(SHORTCUTS_KEY, JSON.stringify(out));
+  alert("快捷鍵已更新。");
 }
 
 async function compressDocumentPrompt() {
-  if (!state.pdfjs) return alert("Open a PDF first.");
-  const quality = Math.max(0.35, Math.min(0.98, Number(prompt("JPEG quality (0.35-0.98)", "0.75")) || 0.75));
-  const scale = Math.max(0.4, Math.min(2, Number(prompt("Render scale (0.4-2.0)", "1.0")) || 1));
-  const keepName = confirm("Keep original name? (Cancel => append -compressed)");
-  if (!confirm("Compression rebuilds pages as images (text/search/form may be flattened). Continue?")) return;
-
-  const doc = await PDFLib.PDFDocument.create();
-  for (let p = 1; p <= state.totalPages; p += 1) {
-    const page = await state.pdfjs.getPage(p);
-    const vp = page.getViewport({ scale });
-    const c = document.createElement("canvas");
-    c.width = Math.ceil(vp.width);
-    c.height = Math.ceil(vp.height);
-    await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
-    const dataUrl = c.toDataURL("image/jpeg", quality);
-    const jpgBytes = await (await fetch(dataUrl)).arrayBuffer();
-    const jpg = await doc.embedJpg(jpgBytes);
-    const dPage = doc.addPage([jpg.width, jpg.height]);
-    dPage.drawImage(jpg, { x: 0, y: 0, width: jpg.width, height: jpg.height });
-  }
-  const out = await doc.save();
-  const outName = keepName ? state.fileName : `${baseName(state.fileName)}-compressed.pdf`;
-  await loadPdfBytes(new Uint8Array(out), outName);
-  alert("Compression complete.");
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  const cVals = await openSettingsDialog({
+    title: "壓縮 PDF",
+    submitText: "壓縮並下載",
+    fields: [
+      { key: "level", label: "壓縮等級", type: "select", value: "medium", options: [
+        { value: "low", label: "低（較快，較大）" },
+        { value: "medium", label: "中等（建議）" },
+        { value: "high", label: "高（較慢，較小）" },
+      ]},
+      { key: "name", label: "輸出檔名", type: "text", value: `${baseName(state.fileName)}-compressed.pdf` },
+    ],
+  });
+  if (!cVals) return;
+  const bytes = await state.pdfLib.save({ useObjectStreams: cVals.level !== "low" });
+  downloadBytes(bytes, (cVals.name || `${baseName(state.fileName)}-compressed.pdf`).trim());
 }
 
 async function applyBatesNumberingPrompt() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const prefix = prompt("Bates prefix", "DOC-") ?? "DOC-";
-  const suffix = prompt("Bates suffix", "") ?? "";
-  const start = Number(prompt("Start number", "1"));
-  const digits = Number(prompt("Digits", "6"));
-  const rangeInput = prompt("Page range (all or 1-3,5)", "all") || "all";
-  const pos = (prompt("Position: tl/tr/bl/br", "br") || "br").toLowerCase();
-  const pages = parseAnnotationRangeInput(rangeInput);
-  if (!pages.length) return alert("No valid pages.");
-
-  pages.forEach((pNum, i) => {
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  const bVals = await openSettingsDialog({
+    title: "Bates 編號",
+    submitText: "套用",
+    fields: [
+      { key: "prefix", label: "前綴", type: "text", value: "DOC-" },
+      { key: "start", label: "起始號碼", type: "number", value: "1", min: "0", step: "1" },
+      { key: "digits", label: "最小位數", type: "number", value: "5", min: "1", step: "1" },
+      { key: "range", label: "頁面範圍", type: "text", value: "all", placeholder: "all / 1-3,5" },
+      { key: "pos", label: "位置", type: "select", value: "br", options: [
+        { value: "tl", label: "左上" }, { value: "tr", label: "右上" },
+        { value: "bl", label: "左下" }, { value: "br", label: "右下" },
+      ]},
+    ],
+  });
+  if (!bVals) return;
+  const prefix = bVals.prefix || "DOC-";
+  const start = Number(bVals.start) || 0;
+  const digits = Math.max(1, Number(bVals.digits) || 5);
+  const bPages = parseAnnotationRangeInput(bVals.range || "all");
+  if (!bPages.length) return alert("沒有有效頁面。");
+  const pos = bVals.pos || "br";
+  bPages.forEach((pNum, i) => {
     const page = state.pdfLib.getPage(pNum - 1);
     const s = page.getSize();
-    const num = String((Number.isFinite(start) ? start : 1) + i).padStart(Number.isFinite(digits) ? digits : 6, "0");
-    const text = `${prefix}${num}${suffix}`;
-    const m = 24;
-    let x = s.width - m * 4;
-    let y = m;
-    if (pos === "tl") {
-      x = m;
-      y = s.height - m;
-    } else if (pos === "tr") {
-      x = s.width - m * 4;
-      y = s.height - m;
-    } else if (pos === "bl") {
-      x = m;
-      y = m;
-    }
-    page.drawText(text, { x, y, size: 10 });
+    const label = prefix + String(start + i).padStart(digits, "0");
+    const m = 20;
+    let x = s.width - m * 4, y = m;
+    if (pos === "tl") { x = m; y = s.height - m; }
+    else if (pos === "tr") { x = s.width - m * 4; y = s.height - m; }
+    else if (pos === "bl") { x = m; y = m; }
+    page.drawText(label, { x, y, size: 9 });
   });
   await reloadFromPdfLib();
 }
 
-async function flattenAnnotationsToPdf() {
-  if (!state.pdfLib) return alert("Open a PDF first.");
-  const count = Object.values(state.annotations).reduce((s, a) => s + a.length, 0);
-  if (!count) return alert("No annotations to flatten.");
-  if (!confirm(`Flatten ${count} annotation(s) into PDF content?`)) return;
-  Object.entries(state.annotations).forEach(([pageStr, anns]) => {
-    const pNum = Number(pageStr);
-    const page = state.pdfLib.getPage(pNum - 1);
-    anns.forEach((a) => {
-      if (a.type === "h") {
-        page.drawRectangle({
-          x: a.x,
-          y: page.getSize().height - a.y - a.h,
-          width: a.w,
-          height: a.h,
-          opacity: 0.35,
-        });
-      } else if (a.type === "rd") {
-        page.drawRectangle({
-          x: a.x,
-          y: page.getSize().height - a.y - a.h,
-          width: a.w,
-          height: a.h,
-          color: PDFLib.rgb(0, 0, 0),
-        });
-      } else if (a.type === "t") {
-        page.drawText(a.text || "", {
-          x: a.x,
-          y: page.getSize().height - a.y - 14,
-          size: 12,
-        });
-      } else if (a.type === "r" || a.type === "e") {
-        page.drawRectangle({
-          x: a.x,
-          y: page.getSize().height - a.y - a.h,
-          width: a.w,
-          height: a.h,
-          borderWidth: a.width || 2,
-          borderColor: parseRgbColor(a.color, 1, 0.8, 0.2),
-          color: undefined,
-          borderOpacity: 1,
-        });
-      } else if (a.type === "l" || a.type === "a") {
-        page.drawLine({
-          start: { x: a.x1, y: page.getSize().height - a.y1 },
-          end: { x: a.x2, y: page.getSize().height - a.y2 },
-          thickness: a.width || 2,
-          color: parseRgbColor(a.color, 1, 0.8, 0.2),
-        });
-      } else if (a.type === "n" || a.type === "s") {
-        page.drawRectangle({
-          x: a.x,
-          y: page.getSize().height - a.y - (a.h || 64),
-          width: a.w || 120,
-          height: a.h || 64,
-          color: a.type === "n" ? parseRgbColor(a.color, 1, 0.96, 0.66) : PDFLib.rgb(1, 1, 1),
-          borderWidth: a.type === "s" ? a.width || 2 : 1,
-          borderColor: parseRgbColor(a.color, 0.5, 0.2, 0.2),
-        });
-        page.drawText(a.text || "", {
-          x: (a.x || 0) + 4,
-          y: page.getSize().height - (a.y || 0) - 18,
-          size: 10,
-          color: parseRgbColor(a.color, 0.3, 0.3, 0.3),
-        });
-      }
-    });
-  });
-  state.annotations = {};
-  state.selectedAnnotationId = null;
-  state.selectedAnnotationIds = [];
-  await reloadFromPdfLib();
+function getRecoveryStore() {
+  try { return JSON.parse(localStorage.getItem(RECOVERY_KEY) || "{}"); } catch { return {}; }
 }
 
-function parseRgbColor(color, dr, dg, db) {
-  const s = String(color || "").trim();
-  if (/^#[0-9a-f]{6}$/i.test(s)) {
-    const r = parseInt(s.slice(1, 3), 16) / 255;
-    const g = parseInt(s.slice(3, 5), 16) / 255;
-    const b = parseInt(s.slice(5, 7), 16) / 255;
-    return PDFLib.rgb(r, g, b);
-  }
-  const m = s.match(/rgba?\(([^)]+)\)/i);
-  if (!m) return PDFLib.rgb(dr, dg, db);
-  const p = m[1].split(",").map((x) => Number(x.trim()));
-  const r = Number.isFinite(p[0]) ? Math.max(0, Math.min(255, p[0])) / 255 : dr;
-  const g = Number.isFinite(p[1]) ? Math.max(0, Math.min(255, p[1])) / 255 : dg;
-  const b = Number.isFinite(p[2]) ? Math.max(0, Math.min(255, p[2])) / 255 : db;
-  return PDFLib.rgb(r, g, b);
-}
-
-async function applyRedactionsToPdf() {
-  if (!state.pdfLib) return alert("Open a writable PDF first.");
-  const marks = Object.values(state.annotations).flat().filter((a) => a.type === "rd");
-  if (!marks.length) return alert("No redaction marks.");
-  if (!confirm(`Apply ${marks.length} redaction mark(s) permanently?`)) return;
-  Object.entries(state.annotations).forEach(([pageStr, anns]) => {
-    const page = state.pdfLib.getPage(Number(pageStr) - 1);
-    anns
-      .filter((a) => a.type === "rd")
-      .forEach((a) => {
-        page.drawRectangle({
-          x: a.x,
-          y: page.getSize().height - a.y - a.h,
-          width: a.w,
-          height: a.h,
-          color: PDFLib.rgb(0, 0, 0),
-        });
-      });
-  });
-  Object.keys(state.annotations).forEach((p) => {
-    state.annotations[p] = (state.annotations[p] || []).filter((a) => a.type !== "rd");
-  });
-  state.selectedAnnotationId = null;
-  state.selectedAnnotationIds = [];
-  await reloadFromPdfLib();
-}
-
-function renderConvertWizard() {
-  $("wt").textContent = "轉換精靈";
-  if (state.wizardStep === 1) {
-    $("wb").innerHTML = `
-      <div class="fg">
-        <label>模式
-          <select id="cvMode">
-            <option value="pdf-to-images">PDF -> 圖片 (PNG)</option>
-            <option value="images-to-pdf">圖片 -> PDF</option>
-            <option value="office-to-pdf-cli">Office -> PDF（CLI 計畫）</option>
-            <option value="pdf-to-text-cli">PDF -> 文字（CLI 計畫）</option>
-            <option value="pdf-ocr-cli">PDF OCR -> 可搜尋 PDF（CLI 計畫）</option>
-            <option value="compare-cli">PDF 比對（CLI 計畫）</option>
-          </select>
-        </label>
-        <label>縮放 / DPI 倍率
-          <input id="cvScale" type="number" step="0.1" min="0.5" max="5" value="2">
-        </label>
-      </div>`;
-    $("wn").textContent = "下一步";
-    return;
-  }
-  if (state.wizardStep === 2) {
-    $("wb").innerHTML = `
-      <div class="fg">
-        <label>影像格式
-          <select id="cvQuality">
-            <option value="png">PNG</option>
-            <option value="jpg">JPG</option>
-          </select>
-        </label>
-        <label>圖片轉 PDF
-          <button id="cvPickImages">選擇圖片</button>
-        </label>
-        <label>CLI 輸出目錄
-          <input id="cvCliOut" value="./out">
-        </label>
-        <label>CLI 輸入 #2（比對模式）
-          <input id="cvCliInput2" value="new.pdf">
-        </label>
-        <label>OCR 語言
-          <input id="cvOcrLang" value="eng">
-        </label>
-      </div>
-      <div id="cvImgList" class="note" style="margin-top:10px">尚未選擇圖片</div>`;
-    $("cvPickImages").addEventListener("click", () => $("imgIn").click());
-    $("imgIn").onchange = () => {
-      window.__convertImages = [...$("imgIn").files];
-      const box = $("cvImgList");
-      if (!window.__convertImages.length) {
-        box.className = "note";
-        box.textContent = "尚未選擇圖片";
-        return;
-      }
-      box.className = "";
-      box.innerHTML = window.__convertImages.map((f, i) => `<div class='thumb'>${i + 1}. ${f.name}</div>`).join("");
-    };
-    $("wn").textContent = "下一步";
-    return;
-  }
-  $("wb").innerHTML = "<div class='note'>已準備執行轉換。</div>";
-  $("wn").textContent = "執行";
-}
-
-async function runConvertWizard() {
-  const cc = window.__convertConfig || {};
-  const mode = $("cvMode")?.value || window.__convertMode || "pdf-to-images";
-  const scale = Math.max(0.5, Math.min(5, Number($("cvScale")?.value || window.__convertScale || 2)));
-  const quality = $("cvQuality")?.value || cc.quality || "png";
-  const cliOut = ($("cvCliOut")?.value || cc.cliOut || "./out").trim() || "./out";
-  const cliInput2 = ($("cvCliInput2")?.value || cc.cliInput2 || "new.pdf").trim() || "new.pdf";
-  const cliLang = ($("cvOcrLang")?.value || cc.cliLang || "eng").trim() || "eng";
-  if (mode === "pdf-to-images") {
-    if (!state.pdfjs) return alert("請先開啟 PDF。");
-    for (let p = 1; p <= state.totalPages; p += 1) {
-      const page = await state.pdfjs.getPage(p);
-      const vp = page.getViewport({ scale });
-      const c = document.createElement("canvas");
-      c.width = Math.ceil(vp.width);
-      c.height = Math.ceil(vp.height);
-      await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
-      const mime = quality === "jpg" ? "image/jpeg" : "image/png";
-      const dataUrl = c.toDataURL(mime, 0.92);
-      const a = document.createElement("a");
-      a.href = dataUrl;
-      a.download = `${baseName(state.fileName)}-p${String(p).padStart(3, "0")}.${quality === "jpg" ? "jpg" : "png"}`;
-      a.click();
-    }
-    closeWizard();
-    alert(`已匯出 ${state.totalPages} 張圖片。`);
-    return;
-  }
-  if (mode.endsWith("-cli")) {
-    const fileA = state.fileName || "input.pdf";
-    const lines = [
-      "$ErrorActionPreference='Stop'",
-      "$root = Split-Path -Parent $MyInvocation.MyCommand.Path",
-      "$tool = Join-Path $root 'cli\\pdf_toolkit.ps1'",
-      `New-Item -ItemType Directory -Path ${psQuote(cliOut)} -Force | Out-Null`,
-      "",
-    ];
-    if (mode === "office-to-pdf-cli") {
-      lines.push(`# Replace input path with your Office file path`);
-      lines.push(`& powershell -ExecutionPolicy Bypass -File $tool -Action office2pdf -Input ${psQuote("input.docx")} -OutDir ${psQuote(cliOut)}`);
-    } else if (mode === "pdf-to-text-cli") {
-      lines.push(`& powershell -ExecutionPolicy Bypass -File $tool -Action pdf2text -Input ${psQuote(fileA)} -Output ${psQuote(`${cliOut}/${baseName(fileA)}.txt`)}`);
-    } else if (mode === "pdf-ocr-cli") {
-      lines.push(`& powershell -ExecutionPolicy Bypass -File $tool -Action ocr -Input ${psQuote(fileA)} -Output ${psQuote(`${cliOut}/${baseName(fileA)}.ocr.pdf`)} -Lang ${psQuote(cliLang)}`);
-    } else if (mode === "compare-cli") {
-      lines.push(`& powershell -ExecutionPolicy Bypass -File $tool -Action compare -Input ${psQuote(fileA)} -Input2 ${psQuote(cliInput2)} -OutDir ${psQuote(cliOut)}`);
-    }
-    downloadBytes(new TextEncoder().encode(`${lines.join("\n")}\n`), `convert-${Date.now()}.ps1`, "text/plain");
-    closeWizard();
-    alert("已產生 CLI 轉換計畫腳本。");
-    return;
-  }
-  const images = window.__convertImages || [];
-  if (!images.length) return alert("尚未選擇圖片。");
-  const doc = await PDFLib.PDFDocument.create();
-  for (const f of images) {
-    const bytes = new Uint8Array(await f.arrayBuffer());
-    const lower = f.name.toLowerCase();
-    let embedded;
-    if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) embedded = await doc.embedJpg(bytes);
-    else embedded = await doc.embedPng(bytes);
-    const page = doc.addPage([embedded.width, embedded.height]);
-    page.drawImage(embedded, { x: 0, y: 0, width: embedded.width, height: embedded.height });
-  }
-  const out = await doc.save();
-  downloadBytes(out, `images-${Date.now()}.pdf`);
-  closeWizard();
-}
-
-function renderSplitWizard() {
-  $("wt").textContent = "拆分精靈";
-  if (state.wizardStep === 1) {
-    $("wb").innerHTML = `
-      <div class="fg">
-        <label>模式
-          <select id="sm">
-            <option value="every">每 N 頁拆分</option>
-            <option value="range">指定範圍（例 1-3,5-8）</option>
-            <option value="bookmark">依書籤拆分</option>
-          </select>
-        </label>
-        <label>N 頁
-          <input id="sn" type="number" min="1" value="1">
-        </label>
-      </div>`;
-    $("wn").textContent = "下一步";
-    return;
-  }
-  if (state.wizardStep === 2) {
-    $("wb").innerHTML = `
-      <div class="fg">
-        <label>檔名前綴
-          <input id="sp" value="${safeAttr(baseName(state.fileName))}">
-        </label>
-        <label>流水號起始
-          <input id="ss" type="number" min="0" value="1">
-        </label>
-        <label>流水號位數
-          <input id="sd" type="number" min="1" max="8" value="3">
-        </label>
-        <label>流水號遞增
-          <input id="stp" type="number" min="1" value="1">
-        </label>
-        <label>下載模式
-          <select id="dm">
-            <option value="multi">多檔下載</option>
-            <option value="single">單一壓縮包</option>
-          </select>
-        </label>
-        <label>範圍表達式
-          <input id="sr" placeholder="1-3,5-8">
-        </label>
-      </div>`;
-    $("wn").textContent = "下一步";
-    return;
-  }
-  $("wb").innerHTML = "<div class='note'>準備拆分。命名規則：{prefix}-{serial}.pdf</div>";
-  $("wn").textContent = "執行";
-}
-
-async function runSplitWizard() {
-  if (!state.pdfLib) return alert("請先開啟 PDF。");
-  const mode = $("sm")?.value || "every";
-  const prefix = ($("sp")?.value || "").trim() || baseName(state.fileName);
-  const start = parseInt($("ss")?.value || "1", 10);
-  const digits = parseInt($("sd")?.value || "3", 10);
-  const step = parseInt($("stp")?.value || "1", 10);
-  const n = Math.max(1, parseInt($("sn")?.value || "1", 10));
-  const expr = ($("sr")?.value || "").trim();
-  const downloadMode = $("dm")?.value || "multi";
-
-  let groups = [];
-  let bookmarkNames = [];
-  if (mode === "range" && expr) {
-    const indices = parseRange(expr, state.totalPages);
-    if (!indices.length) return alert("Invalid range expression.");
-    groups = [indices];
-  } else if (mode === "bookmark") {
-    const entries = await getOutlineSplitEntries();
-    if (!entries.length) return alert("No bookmark destinations found.");
-    groups = entries.map((e) => e.indices);
-    bookmarkNames = entries.map((e) => e.title);
-  } else {
-    for (let i = 0; i < state.totalPages; i += n) {
-      const g = [];
-      for (let j = i; j < Math.min(i + n, state.totalPages); j += 1) g.push(j);
-      groups.push(g);
-    }
-  }
-
-  let serial = start;
-  const outputs = [];
-  for (const g of groups) {
-    const out = await PDFLib.PDFDocument.create();
-    const copied = await out.copyPages(state.pdfLib, g);
-    copied.forEach((p) => out.addPage(p));
-    const bytes = await out.save();
-    const titlePart = bookmarkNames.length ? `-${sanitizeFileNamePart(bookmarkNames[outputs.length] || "")}` : "";
-    const name = `${prefix}-${String(serial).padStart(digits, "0")}${titlePart}.pdf`;
-    outputs.push({ name, bytes });
-    serial += step;
-  }
-  if (downloadMode === "single") {
-    if (typeof JSZip === "undefined") {
-      alert("ZIP library not found. Falling back to multi-file download.");
-      outputs.forEach((f) => downloadBytes(f.bytes, f.name));
-    } else {
-      const zip = new JSZip();
-      outputs.forEach((f) => zip.file(f.name, f.bytes));
-      const pack = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
-      downloadBytes(pack, `${prefix}-split.zip`);
-    }
-  } else {
-    outputs.forEach((f) => downloadBytes(f.bytes, f.name));
-  }
-  closeWizard();
-  alert(`拆分完成：${groups.length} 個檔案。`);
-}
-
-function sanitizeFileNamePart(name) {
-  const s = String(name || "").trim().replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "-");
-  return s.slice(0, 36) || "part";
-}
-
-async function getOutlineSplitEntries() {
-  if (!state.pdfjs) return [];
-  const outline = await state.pdfjs.getOutline();
-  if (!outline?.length) return [];
-  const starts = [];
-  const walk = async (items, depth = 0) => {
-    for (const item of items) {
-      let dest = item.dest;
-      if (typeof dest === "string") dest = await state.pdfjs.getDestination(dest);
-      if (dest?.[0]) {
-        const pageIndex = await state.pdfjs.getPageIndex(dest[0]);
-        starts.push({ page: pageIndex + 1, title: item.title || `Bookmark ${starts.length + 1}`, depth });
-      }
-      if (item.items?.length) await walk(item.items, depth + 1);
-    }
-  };
-  await walk(outline, 0);
-  if (!starts.length) return [];
-
-  // Prefer top-level bookmarks for split boundaries; fallback to all levels.
-  const source = starts.some((x) => x.depth === 0) ? starts.filter((x) => x.depth === 0) : starts;
-  const sorted = source
-    .filter((x) => x.page >= 1 && x.page <= state.totalPages)
-    .sort((a, b) => a.page - b.page);
-  const unique = [];
-  const seen = new Set();
-  sorted.forEach((x) => {
-    if (seen.has(x.page)) return;
-    seen.add(x.page);
-    unique.push(x);
-  });
-  if (!unique.length) return [];
-
-  const out = [];
-  for (let i = 0; i < unique.length; i += 1) {
-    const start = unique[i].page;
-    const end = i + 1 < unique.length ? unique[i + 1].page - 1 : state.totalPages;
-    if (end < start) continue;
-    const indices = [];
-    for (let p = start; p <= end; p += 1) indices.push(p - 1);
-    out.push({ title: unique[i].title, indices });
-  }
-  return out;
-}
-
-function renderMergeWizard() {
-  $("wt").textContent = "合併精靈";
-  if (!window.__mergeItems) window.__mergeItems = [];
-  if (!window.__mergeCurrentRange) window.__mergeCurrentRange = "all";
-  if (state.wizardStep === 1) {
-    const includeCurrent = (window.__mergeIncludeCurrent ?? "yes") !== "no";
-    syncCurrentMergeItem(includeCurrent);
-    $("wb").innerHTML = `
-      <div class="fg">
-        <label>Input files
-          <button id="pm">Add PDF files</button>
-        </label>
-        <label>Input files
-          <button id="pmClear">Clear file list</button>
-        </label>
-        <label>Include current document
-          <select id="mic" value="${includeCurrent ? "yes" : "no"}">
-            <option value="yes"${includeCurrent ? " selected" : ""}>Yes</option>
-            <option value="no"${includeCurrent ? "" : " selected"}>No</option>
-          </select>
-        </label>
-        <label>Current doc range
-          <input id="mcr" value="${safeAttr(window.__mergeCurrentRange || "all")}" placeholder="all or 1-3,5">
-        </label>
-      </div>
-      <div id="ml" class="note" style="margin-top:10px">尚未選擇檔案</div>`;
-    $("pm").addEventListener("click", () => $("mergeIn").click());
-    $("pmClear").addEventListener("click", () => {
-      window.__mergeItems = (window.__mergeItems || []).filter((x) => x.kind !== "file");
-      syncCurrentMergeItem(($("mic")?.value || "yes") !== "no");
-      renderMergeStep1List();
-    });
-    $("mic").addEventListener("change", () => {
-      window.__mergeIncludeCurrent = $("mic").value;
-      syncCurrentMergeItem(($("mic").value || "yes") !== "no");
-      renderMergeStep1List();
-    });
-    $("mcr").addEventListener("input", () => {
-      window.__mergeCurrentRange = $("mcr").value.trim() || "all";
-      const curr = (window.__mergeItems || []).find((x) => x.kind === "current");
-      if (curr) curr.range = window.__mergeCurrentRange;
-    });
-    $("mergeIn").onchange = async () => {
-      await appendMergeFiles([...( $("mergeIn").files || [])]);
-      $("mergeIn").value = "";
-      renderMergeStep1List();
-    };
-    renderMergeStep1List();
-    $("wn").textContent = "下一步";
-    return;
-  }
-  if (state.wizardStep === 2) {
-    const rows = (window.__mergeItems || [])
-      .map(
-        (f, i) => `<li draggable="true" data-i="${i}" style="border:1px solid var(--l);border-radius:8px;padding:8px;background:#253040">
-          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
-            <div style="text-align:left">
-              <div><strong>${f.kind === "current" ? "[目前文件]" : "[檔案]"} ${f.name}</strong></div>
-              <div class="mut">${Number.isFinite(f.totalPages) ? `${f.totalPages} 頁` : "頁數未知"}</div>
-            </div>
-            <div style="display:flex;gap:6px;align-items:center">
-              <input data-range="${safeAttr(f.id)}" value="${safeAttr(f.range || "all")}" placeholder="all or 1-3,5" style="min-width:140px">
-              <select data-preset="${safeAttr(f.id)}">
-                <option value="">預設</option>
-                <option value="all">全部</option>
-                <option value="odd">奇數頁</option>
-                <option value="even">偶數頁</option>
-              </select>
-              ${f.kind === "file" ? `<button data-del="${safeAttr(f.id)}">移除</button>` : ""}
-            </div>
-          </div>
-        </li>`,
-      )
-      .join("");
-    $("wb").innerHTML = `<p class='note'>可拖曳排序，每列可設定頁碼範圍。</p><ul id='mo' style='display:grid;gap:8px;padding-left:18px'>${rows || "<li>沒有檔案</li>"}</ul>`;
-    bindMergeRangeInputs();
-    bindMergeRangePresets();
-    bindMergeRowDelete();
-    bindMergeSort();
-    $("wn").textContent = "下一步";
-    return;
-  }
-  const itemCount = (window.__mergeItems || []).length;
-  const defaultName = `merged-${Date.now()}.pdf`;
-  $("wb").innerHTML = `
-    <div class='fg'>
-      <label>輸出檔名
-        <input id="mOutName" value="${safeAttr(defaultName)}">
-      </label>
-      <label>合併後
-        <select id="mAfter">
-          <option value="open">在應用程式中開啟</option>
-          <option value="download">僅下載</option>
-        </select>
-      </label>
-      <label>摘要
-        <div class="note">準備合併 ${itemCount} 個來源項目。</div>
-      </label>
-    </div>`;
-  $("wn").textContent = "執行";
-}
-
-function bindMergeSort() {
-  const list = $("mo");
-  if (!list) return;
-  let dragIndex = -1;
-  list.querySelectorAll("li[data-i]").forEach((li) => {
-    li.ondragstart = () => {
-      dragIndex = Number(li.dataset.i);
-    };
-    li.ondragover = (e) => e.preventDefault();
-    li.ondrop = () => {
-      const targetIndex = Number(li.dataset.i);
-      if (dragIndex < 0 || targetIndex < 0 || dragIndex === targetIndex) return;
-      const arr = window.__mergeItems || [];
-      const [item] = arr.splice(dragIndex, 1);
-      arr.splice(targetIndex, 0, item);
-      window.__mergeItems = arr;
-      renderWizard();
-    };
-  });
-}
-
-function bindMergeRangeInputs() {
-  document.querySelectorAll("input[data-range]").forEach((inp) => {
-    inp.addEventListener("input", () => {
-      const id = inp.getAttribute("data-range");
-      const item = (window.__mergeItems || []).find((x) => x.id === id);
-      if (item) item.range = inp.value.trim() || "all";
-    });
-  });
-}
-
-function bindMergeRangePresets() {
-  document.querySelectorAll("select[data-preset]").forEach((sel) => {
-    sel.addEventListener("change", () => {
-      const id = sel.getAttribute("data-preset");
-      const item = (window.__mergeItems || []).find((x) => x.id === id);
-      if (!item) return;
-      if (sel.value === "all") item.range = "all";
-      else if (sel.value === "odd") item.range = "1-999999, odd";
-      else if (sel.value === "even") item.range = "2-999999, even";
-      else return;
-      const input = document.querySelector(`input[data-range="${CSS.escape(id)}"]`);
-      if (!input) return;
-      input.value = item.range;
-      // Normalize odd/even pseudo presets into explicit ranges based on known page count.
-      if (sel.value === "odd" || sel.value === "even") {
-        input.value = buildOddEvenRange(item.totalPages || 0, sel.value === "odd");
-        item.range = input.value || "all";
-      }
-    });
-  });
-}
-
-function buildOddEvenRange(total, odd) {
-  if (!Number.isFinite(total) || total < 1) return "all";
-  const pages = [];
-  for (let p = odd ? 1 : 2; p <= total; p += 2) pages.push(p);
-  return pages.join(",");
-}
-
-function bindMergeRowDelete() {
-  document.querySelectorAll("button[data-del]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const id = btn.getAttribute("data-del");
-      window.__mergeItems = (window.__mergeItems || []).filter((x) => x.id !== id);
-      renderWizard();
-    });
-  });
-}
-
-function syncCurrentMergeItem(includeCurrent) {
-  if (!window.__mergeItems) window.__mergeItems = [];
-  window.__mergeItems = window.__mergeItems.filter((x) => x.kind !== "current");
-  if (!includeCurrent || !state.pdfLib) return;
-  window.__mergeItems.unshift({
-    id: "current-doc",
-    kind: "current",
-    name: state.fileName || "Current document",
-    totalPages: state.totalPages || (state.pdfLib ? state.pdfLib.getPageCount() : null),
-    range: window.__mergeCurrentRange || "all",
-  });
-}
-
-async function getFilePageCount(file) {
+function persistRecoveryForFile() {
+  if (!state.fileName || !state.pdfjs) return;
   try {
-    const doc = await PDFLib.PDFDocument.load(await readAndNormalizePdfFile(file), { ignoreEncryption: true });
-    return doc.getPageCount();
-  } catch {
-    return null;
-  }
-}
-
-async function appendMergeFiles(files) {
-  if (!window.__mergeItems) window.__mergeItems = [];
-  const items = window.__mergeItems;
-  for (const file of files) {
-    const sig = `${file.name}|${file.size}|${file.lastModified}`;
-    if (items.some((x) => x.kind === "file" && x.sig === sig)) continue;
-    const totalPages = await getFilePageCount(file);
-    items.push({
-      id: genId(),
-      kind: "file",
-      sig,
-      name: file.name,
-      file,
-      totalPages,
-      range: "all",
-    });
-  }
-}
-
-function renderMergeStep1List() {
-  const box = $("ml");
-  if (!box) return;
-  const arr = (window.__mergeItems || []).filter((x) => x.kind === "file");
-  if (!arr.length) {
-    box.className = "note";
-    box.textContent = "尚未選擇外部檔案";
-    return;
-  }
-  box.className = "";
-  box.innerHTML = arr
-    .map((f, i) => `<div class='thumb'>${i + 1}. ${f.name}${Number.isFinite(f.totalPages) ? ` (${f.totalPages}p)` : ""}</div>`)
-    .join("");
-}
-
-async function runMergeWizard() {
-  const items = window.__mergeItems || [];
-  if (!items.length) return alert("沒有可合併的輸入項目。");
-  const merged = await PDFLib.PDFDocument.create();
-  const invalid = [];
-  const outputName = (($("mOutName")?.value || "").trim() || `merged-${Date.now()}.pdf`).replace(/[\\/:*?"<>|]/g, "_");
-  const after = $("mAfter")?.value || "open";
-
-  for (const src of items) {
-    let doc = null;
-    let total = 0;
-    if (src.kind === "current") {
-      if (!state.pdfLib) continue;
-      doc = state.pdfLib;
-      total = doc.getPageCount();
-    } else {
-      doc = await PDFLib.PDFDocument.load(await readAndNormalizePdfFile(src.file), { ignoreEncryption: true });
-      total = doc.getPageCount();
-    }
-    const expr = (src.range || "all").trim().toLowerCase();
-    const idx = !expr || expr === "all" ? Array.from({ length: total }, (_, i) => i) : parseRange(expr, total);
-    if (!idx.length) {
-      invalid.push(`${src.name}: "${src.range}"`);
-      continue;
-    }
-    const copied = await merged.copyPages(doc, idx);
-    copied.forEach((p) => merged.addPage(p));
-  }
-  if (invalid.length) {
-    alert(`已略過 ${invalid.length} 個範圍無效/空白的項目：\n${invalid.join("\n")}`);
-  }
-  if (!merged.getPageCount()) return alert("沒有可合併的頁面。");
-
-  const bytes = await merged.save();
-  if (after === "download") {
-    downloadBytes(bytes, outputName.endsWith(".pdf") ? outputName : `${outputName}.pdf`);
-  } else {
-    await loadPdfBytes(new Uint8Array(bytes), outputName.endsWith(".pdf") ? outputName : `${outputName}.pdf`);
-  }
-  closeWizard();
-}
-
-function renderBatchWizard() {
-  $("wt").textContent = "批次精靈";
-  if (state.wizardStep === 1) {
-    $("wb").innerHTML = `
-      <div class="fg">
-        <label>操作
-          <select id="bo">
-            <option value="watermark">批次浮水印</option>
-            <option value="rotate">批次旋轉</option>
-            <option value="delete-range">批次刪除頁碼範圍</option>
-            <option value="page-numbers">批次頁碼</option>
-            <option value="bates">批次 Bates 編號</option>
-            <option value="header-footer">批次頁首頁尾</option>
-            <option value="metadata">批次中繼資料</option>
-            <option value="flatten-form">批次表單扁平化</option>
-            <option value="crop-margins">批次頁邊裁切</option>
-            <option value="redact-pages">批次頁面遮蔽</option>
-            <option value="cli-encrypt">CLI 計畫：批次加密</option>
-            <option value="cli-permissions">CLI 計畫：批次權限</option>
-            <option value="cli-pdf2text">CLI 計畫：批次 PDF 轉文字</option>
-            <option value="cli-ocr">CLI 計畫：批次 OCR PDF</option>
-          </select>
-        </label>
-        <label>輸入檔案
-          <button id="pb">選擇 PDF 檔案</button>
-        </label>
-      </div>
-      <div id="bl" class="note" style="margin-top:10px">尚未選擇檔案</div>`;
-    $("pb").addEventListener("click", () => $("batchIn").click());
-    $("batchIn").onchange = () => {
-      window.__batchFiles = [...$("batchIn").files];
-      const box = $("bl");
-      if (!window.__batchFiles.length) {
-        box.className = "note";
-        box.textContent = "尚未選擇檔案";
-        return;
-      }
-      box.className = "";
-      box.innerHTML = window.__batchFiles.map((f, i) => `<div class='thumb'>${i + 1}. ${f.name}</div>`).join("");
+    const store = getRecoveryStore();
+    store[state.fileName] = {
+      fileName: state.fileName,
+      annotations: state.annotations,
+      customBookmarks: state.customBookmarks,
+      pageLabelRules: state.pageLabelRules,
+      updatedAt: Date.now(),
     };
-    $("wn").textContent = "下一步";
-    return;
-  }
-  if (state.wizardStep === 2) {
-    $("wb").innerHTML = `
-      <div class="fg">
-        <label>輸出前綴
-          <input id="bp" value="batch">
-        </label>
-        <label>浮水印文字
-          <input id="bw" value="CONFIDENTIAL">
-        </label>
-        <label>刪除範圍
-          <input id="br" placeholder="e.g. 2,4-6">
-        </label>
-        <label>旋轉角度
-          <select id="ba">
-            <option value="90">90</option>
-            <option value="180">180</option>
-            <option value="270">270</option>
-          </select>
-        </label>
-        <label>頁碼起始
-          <input id="bpnStart" type="number" value="1">
-        </label>
-        <label>頁碼位置
-          <select id="bpnPos">
-            <option value="rb">right-bottom</option>
-            <option value="lb">left-bottom</option>
-            <option value="rt">right-top</option>
-            <option value="lt">left-top</option>
-          </select>
-        </label>
-        <label>頁碼字體大小
-          <input id="bpnSize" type="number" min="6" value="10">
-        </label>
-        <label>Bates 前綴
-          <input id="bbPrefix" value="DOC-">
-        </label>
-        <label>Bates 起始
-          <input id="bbStart" type="number" min="0" value="1">
-        </label>
-        <label>Bates 位數
-          <input id="bbDigits" type="number" min="1" max="12" value="6">
-        </label>
-        <label>Bates 後綴
-          <input id="bbSuffix" value="">
-        </label>
-        <label>下載模式
-          <select id="bdm">
-            <option value="multi">多檔下載</option>
-            <option value="single">單一 ZIP</option>
-          </select>
-        </label>
-        <label>頁首模板
-          <input id="bh" value="">
-        </label>
-        <label>頁尾模板
-          <input id="bf" value="Page {page}/{total}">
-        </label>
-        <label>頁首頁尾字體大小
-          <input id="bhfs" type="number" min="6" value="10">
-        </label>
-        <label>中繼資料標題
-          <input id="bmt" value="">
-        </label>
-        <label>中繼資料作者
-          <input id="bma" value="">
-        </label>
-        <label>中繼資料主題
-          <input id="bmsu" value="">
-        </label>
-        <label>中繼資料關鍵字（逗號分隔）
-          <input id="bmkw" value="">
-        </label>
-        <label>裁切 上/右/下/左（pt）
-          <input id="bcrop" value="20,20,20,20">
-        </label>
-        <label>裁切頁碼範圍（每檔）
-          <input id="bcropRange" value="all">
-        </label>
-        <label>報表
-          <select id="breport">
-            <option value="yes">下載 JSON 報表</option>
-            <option value="no">不下載</option>
-          </select>
-        </label>
-        <label>CLI 輸出目錄
-          <input id="bCliOutDir" value="./out">
-        </label>
-        <label>CLI 使用者密碼
-          <input id="bCliUser" value="user1234">
-        </label>
-        <label>CLI 擁有者密碼
-          <input id="bCliOwner" value="owner1234">
-        </label>
-        <label>CLI 允許權限（permissions 模式）
-          <select id="bCliAllow">
-            <option value="none">none</option>
-            <option value="print">print</option>
-            <option value="annotate">annotate</option>
-            <option value="form">form</option>
-            <option value="extract">extract</option>
-            <option value="all">all</option>
-          </select>
-        </label>
-        <label>CLI OCR 語言
-          <input id="bCliLang" value="eng">
-        </label>
-      </div>`;
-    $("wn").textContent = "下一步";
-    return;
-  }
-  $("wb").innerHTML = "<div class='note'>準備執行批次操作。</div>";
-  $("wn").textContent = "執行";
+    localStorage.setItem(RECOVERY_KEY, JSON.stringify(store));
+  } catch { /* quota exceeded or private mode */ }
 }
 
-async function runBatchWizard() {
-  const bc = window.__batchConfig || {};
-  const op = $("bo")?.value || window.__batchOp || "watermark";
-  const files = window.__batchFiles || [];
-  if (!files.length) return alert("尚未選擇檔案。");
-  const prefix = ($("bp")?.value || bc.prefix || "").trim() || "batch";
-  const wm = $("bw")?.value || bc.wm || "CONFIDENTIAL";
-  const delRange = ($("br")?.value || bc.delRange || "").trim();
-  const angle = parseInt($("ba")?.value || bc.angle || "90", 10) || 90;
-  const pnStart = parseInt($("bpnStart")?.value || bc.pnStart || "1", 10) || 1;
-  const pnPos = $("bpnPos")?.value || bc.pnPos || "rb";
-  const pnSize = Math.max(6, parseInt($("bpnSize")?.value || bc.pnSize || "10", 10) || 10);
-  const bPrefix = $("bbPrefix")?.value ?? bc.bPrefix ?? "DOC-";
-  const bStart = parseInt($("bbStart")?.value || bc.bStart || "1", 10) || 1;
-  const bDigits = Math.max(1, parseInt($("bbDigits")?.value || bc.bDigits || "6", 10) || 6);
-  const bSuffix = $("bbSuffix")?.value ?? bc.bSuffix ?? "";
-  const downloadMode = $("bdm")?.value || bc.downloadMode || "multi";
-  const headerTpl = $("bh")?.value ?? bc.headerTpl ?? "";
-  const footerTpl = $("bf")?.value ?? bc.footerTpl ?? "";
-  const hfSize = Math.max(6, parseInt($("bhfs")?.value || bc.hfSize || "10", 10) || 10);
-  const metaTitle = $("bmt")?.value ?? bc.metaTitle ?? "";
-  const metaAuthor = $("bma")?.value ?? bc.metaAuthor ?? "";
-  const metaSubject = $("bmsu")?.value ?? bc.metaSubject ?? "";
-  const metaKeywords = $("bmkw")?.value ?? bc.metaKeywords ?? "";
-  const cropMarginsRaw = ($("bcrop")?.value || bc.cropMarginsRaw || "20,20,20,20").trim();
-  const cropRangeRaw = ($("bcropRange")?.value || bc.cropRangeRaw || "all").trim();
-  const wantReport = ($("breport")?.value || bc.wantReport || "yes") !== "no";
-  const cliOutDir = ($("bCliOutDir")?.value || bc.cliOutDir || "./out").trim() || "./out";
-  const cliUser = $("bCliUser")?.value || bc.cliUser || "user1234";
-  const cliOwner = $("bCliOwner")?.value || bc.cliOwner || "owner1234";
-  const cliAllow = $("bCliAllow")?.value || bc.cliAllow || "none";
-  const cliLang = ($("bCliLang")?.value || bc.cliLang || "eng").trim() || "eng";
-  const today = new Date().toISOString().slice(0, 10);
+async function maybeRestoreRecoveryForFile(fileName) {
+  const store = getRecoveryStore();
+  const rec = store[fileName];
+  if (!rec) return;
+  const ageMinutes = Math.floor((Date.now() - (rec.updatedAt || 0)) / 60000);
+  const ok = await openConfirmDialog(
+    `找到「${fileName}」的自動備份（${ageMinutes} 分鐘前），是否還原？`,
+    "還原備份"
+  );
+  if (!ok) return;
+  if (rec.annotations) state.annotations = rec.annotations;
+  if (rec.customBookmarks) state.customBookmarks = rec.customBookmarks;
+  if (rec.pageLabelRules) state.pageLabelRules = rec.pageLabelRules;
+  redrawAllAnnotationLayers();
+  renderBookmarks();
+  renderThumbnails();
+  updateStatus();
+}
 
-  if (op.startsWith("cli-")) {
-    const script = buildBatchCliPlan({
-      op,
-      files,
-      outDir: cliOutDir,
-      userPassword: cliUser,
-      ownerPassword: cliOwner,
-      allow: cliAllow,
-      ocrLang: cliLang,
-    });
-    downloadBytes(new TextEncoder().encode(script), `${prefix}-batch-cli.ps1`, "text/plain");
-    const manifest = {
-      ts: new Date().toISOString(),
-      operation: op,
-      outDir: cliOutDir,
-      inputCount: files.length,
-      inputs: files.map((f) => f.name),
-      note: "Run generated script in project root where cli/pdf_toolkit.ps1 exists.",
-    };
-    if (wantReport) downloadBytes(new TextEncoder().encode(JSON.stringify(manifest, null, 2)), `${prefix}-batch-cli.json`, "application/json");
-    closeWizard();
-    alert(`已為 ${files.length} 個檔案產生 CLI 批次腳本。`);
-    return;
-  }
+function startAutoBackupTimer() {
+  setInterval(() => {
+    try { persistRecoveryForFile(); } catch { /* ignore */ }
+  }, 30000);
+}
 
-  let i = 1;
-  let batesSerial = bStart;
-  const outputs = [];
-  const report = [];
-  for (const file of files) {
-    try {
-      const doc = await PDFLib.PDFDocument.load(await readAndNormalizePdfFile(file), { ignoreEncryption: true });
-      if (op === "rotate") {
-        doc.getPages().forEach((p) => p.setRotation(PDFLib.degrees((p.getRotation().angle + angle) % 360)));
-      } else if (op === "delete-range") {
-        const total = doc.getPageCount();
-        const idx = parseRange(delRange || "", total);
-        if (idx.length && idx.length < total) {
-          idx
-            .slice()
-            .sort((a, b) => b - a)
-            .forEach((iPage) => doc.removePage(iPage));
-        }
-      } else if (op === "watermark") {
-        doc.getPages().forEach((p) => {
-          const s = p.getSize();
-          p.drawText(wm, { x: s.width * 0.18, y: s.height * 0.48, size: 34, rotate: PDFLib.degrees(35), opacity: 0.18 });
-        });
-      } else if (op === "page-numbers") {
-        let num = pnStart;
-        doc.getPages().forEach((p) => {
-          const s = p.getSize();
-          let x = s.width - 56;
-          let y = 18;
-          if (pnPos === "lb") {
-            x = 24;
-            y = 18;
-          } else if (pnPos === "rt") {
-            x = s.width - 56;
-            y = s.height - (pnSize + 10);
-          } else if (pnPos === "lt") {
-            x = 24;
-            y = s.height - (pnSize + 10);
-          }
-          p.drawText(String(num), { x, y, size: pnSize, color: PDFLib.rgb(0.12, 0.12, 0.12) });
-          num += 1;
-        });
-      } else if (op === "bates") {
-        doc.getPages().forEach((p) => {
-          const s = p.getSize();
-          const tag = `${bPrefix}${String(batesSerial).padStart(bDigits, "0")}${bSuffix}`;
-          p.drawText(tag, { x: s.width - 150, y: 16, size: 10, color: PDFLib.rgb(0.15, 0.15, 0.15) });
-          batesSerial += 1;
-        });
-      } else if (op === "header-footer") {
-        const total = doc.getPageCount();
-        doc.getPages().forEach((p, idx) => {
-          const s = p.getSize();
-          const vars = {
-            page: String(idx + 1),
-            total: String(total),
-            date: today,
-            file: file.name,
-          };
-          const fill = (tpl) =>
-            String(tpl || "").replace(/\{(page|total|date|file)\}/g, (_, k) => vars[k] || "");
-          const header = fill(headerTpl);
-          const footer = fill(footerTpl);
-          if (header) p.drawText(header, { x: 24, y: s.height - (hfSize + 8), size: hfSize, color: PDFLib.rgb(0.2, 0.2, 0.2) });
-          if (footer) p.drawText(footer, { x: 24, y: 14, size: hfSize, color: PDFLib.rgb(0.2, 0.2, 0.2) });
-        });
-      } else if (op === "metadata") {
-        if (metaTitle.trim()) doc.setTitle(metaTitle.replace(/\{file\}/g, file.name));
-        if (metaAuthor.trim()) doc.setAuthor(metaAuthor);
-        if (metaSubject.trim()) doc.setSubject(metaSubject);
-        if (metaKeywords.trim()) doc.setKeywords(metaKeywords.split(",").map((x) => x.trim()).filter(Boolean));
-        doc.setProducer("Offline PDF Studio");
-        doc.setCreator("Offline PDF Studio");
-        doc.setModificationDate(new Date());
-      } else if (op === "flatten-form") {
-        try {
-          const form = doc.getForm();
-          form.flatten();
-        } catch {
-          // Non-form PDFs are still valid batch inputs.
-        }
-      } else if (op === "crop-margins") {
-        const nums = cropMarginsRaw.split(",").map((x) => Number(x.trim()));
-        if (nums.length !== 4 || nums.some((n) => !Number.isFinite(n) || n < 0)) throw new Error("Invalid crop margins. Use top,right,bottom,left");
-        const [top, right, bottom, left] = nums;
-        const total = doc.getPageCount();
-        const idx = parseRangeExtended(cropRangeRaw, total);
-        if (!idx.length) throw new Error("No valid crop range.");
-        idx.forEach((iPage) => {
-          const p = doc.getPage(iPage);
-          const s = p.getSize();
-          const x = Math.max(0, left);
-          const y = Math.max(0, bottom);
-          const w = Math.max(1, s.width - Math.max(0, left) - Math.max(0, right));
-          const h = Math.max(1, s.height - Math.max(0, top) - Math.max(0, bottom));
-          p.setCropBox(x, y, w, h);
-        });
-      } else if (op === "redact-pages") {
-        const total = doc.getPageCount();
-        const idx = parseRangeExtended(delRange || "all", total);
-        if (!idx.length) throw new Error("No valid redaction pages.");
-        idx.forEach((iPage) => {
-          const p = doc.getPage(iPage);
-          const s = p.getSize();
-          p.drawRectangle({ x: 0, y: 0, width: s.width, height: s.height, color: PDFLib.rgb(0, 0, 0) });
-        });
-      }
-      const bytes = await doc.save();
-      const outName = `${prefix}-${String(i).padStart(3, "0")}.pdf`;
-      outputs.push({ name: outName, bytes });
-      report.push({ input: file.name, status: "ok", output: outName, pages: doc.getPageCount() });
-      i += 1;
-    } catch (err) {
-      report.push({ input: file.name, status: "error", error: err?.message || String(err) });
-    }
-  }
-  if (downloadMode === "single") {
-    if (typeof JSZip === "undefined") {
-      alert("找不到 ZIP 函式庫，改為多檔下載。");
-      outputs.forEach((f) => downloadBytes(f.bytes, f.name));
+// ============================================================
+// RESTORED MISSING FUNCTIONS
+// ============================================================
+
+// --- parseRange (0-indexed array from "1-3,5,odd" style expr) ---
+function parseRange(expr, total) {
+  const raw = (expr || "").trim().toLowerCase();
+  if (!raw || raw === "all") return Array.from({ length: total }, (_, i) => i);
+  const result = new Set();
+  raw.split(",").map(p => p.trim()).filter(Boolean).forEach(part => {
+    if (part === "odd") { for (let i = 0; i < total; i += 2) result.add(i); return; }
+    if (part === "even") { for (let i = 1; i < total; i += 2) result.add(i); return; }
+    const dash = part.indexOf("-");
+    if (dash > 0) {
+      const a = parseInt(part.slice(0, dash), 10) - 1;
+      const b = parseInt(part.slice(dash + 1), 10) - 1;
+      for (let i = Math.max(0, a); i <= Math.min(total - 1, b); i++) result.add(i);
     } else {
-      const zip = new JSZip();
-      outputs.forEach((f) => zip.file(f.name, f.bytes));
-      const pack = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
-      downloadBytes(pack, `${prefix}-batch.zip`);
-    }
-  } else {
-    outputs.forEach((f) => downloadBytes(f.bytes, f.name));
-  }
-  if (wantReport) {
-    const reportBytes = new TextEncoder().encode(
-      JSON.stringify(
-        {
-          ts: new Date().toISOString(),
-          operation: op,
-          inputCount: files.length,
-          outputCount: outputs.length,
-          failedCount: report.filter((x) => x.status !== "ok").length,
-          items: report,
-        },
-        null,
-        2,
-      ),
-    );
-    const blob = new Blob([reportBytes], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${prefix}-batch-report.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-  }
-  closeWizard();
-  const failed = report.filter((x) => x.status !== "ok").length;
-  alert(`批次完成：成功 ${outputs.length}/${files.length}${failed ? `，失敗 ${failed}` : ""}。`);
-}
-
-function psQuote(value) {
-  return `'${String(value ?? "").replace(/'/g, "''")}'`;
-}
-
-function buildBatchCliPlan({ op, files, outDir, userPassword, ownerPassword, allow, ocrLang }) {
-  const lines = [
-    "$ErrorActionPreference='Stop'",
-    `$root = Split-Path -Parent $MyInvocation.MyCommand.Path`,
-    "$tool = Join-Path $root 'cli\\pdf_toolkit.ps1'",
-    `New-Item -ItemType Directory -Path ${psQuote(outDir)} -Force | Out-Null`,
-    "",
-  ];
-  files.forEach((file) => {
-    const inName = file.name;
-    const stem = baseName(inName);
-    const ext = extensionOf(inName) || "pdf";
-    if (op === "cli-encrypt") {
-      lines.push(`& powershell -ExecutionPolicy Bypass -File $tool -Action encrypt -Input ${psQuote(inName)} -Output ${psQuote(`${outDir}/${stem}.enc.${ext}`)} -UserPassword ${psQuote(userPassword)} -OwnerPassword ${psQuote(ownerPassword)}`);
-    } else if (op === "cli-permissions") {
-      lines.push(`& powershell -ExecutionPolicy Bypass -File $tool -Action permissions -Input ${psQuote(inName)} -Output ${psQuote(`${outDir}/${stem}.perm.${ext}`)} -OwnerPassword ${psQuote(ownerPassword)} -UserPassword ${psQuote(userPassword)} -Allow ${psQuote(allow)}`);
-    } else if (op === "cli-pdf2text") {
-      lines.push(`& powershell -ExecutionPolicy Bypass -File $tool -Action pdf2text -Input ${psQuote(inName)} -Output ${psQuote(`${outDir}/${stem}.txt`)}`);
-    } else if (op === "cli-ocr") {
-      lines.push(`& powershell -ExecutionPolicy Bypass -File $tool -Action ocr -Input ${psQuote(inName)} -Output ${psQuote(`${outDir}/${stem}.ocr.${ext}`)} -Lang ${psQuote(ocrLang)}`);
+      const n = parseInt(part, 10) - 1;
+      if (n >= 0 && n < total) result.add(n);
     }
   });
-  return `${lines.join("\n")}\n`;
+  return [...result].sort((a, b) => a - b);
 }
 
-function parseRange(expr, total) {
-  const set = new Set();
-  expr
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .forEach((part) => {
-      if (part.includes("-")) {
-        const [a, b] = part.split("-").map((x) => Number(x.trim()));
-        if (Number.isFinite(a) && Number.isFinite(b)) {
-          for (let n = Math.min(a, b); n <= Math.max(a, b); n += 1) {
-            if (n >= 1 && n <= total) set.add(n - 1);
-          }
-        }
-      } else {
-        const n = Number(part);
-        if (Number.isFinite(n) && n >= 1 && n <= total) set.add(n - 1);
-      }
-    });
-  return [...set].sort((a, b) => a - b);
+// --- Diagnostics log ---
+const _logBuffer = [];
+function pushLog(level, msg, data) {
+  _logBuffer.push({ t: Date.now(), level, msg, data: data ?? null });
+  if (_logBuffer.length > 500) _logBuffer.shift();
+  try { localStorage.setItem(LOG_KEY, JSON.stringify(_logBuffer.slice(-200))); } catch { /* quota */ }
 }
+
+function bindErrorLogging() {
+  window.addEventListener("error", (e) => pushLog("error", e.message || "JS Error", { file: e.filename, line: e.lineno }));
+  window.addEventListener("unhandledrejection", (e) => pushLog("error", String(e.reason), {}));
+}
+
+function exportDiagnosticsLog() {
+  const lines = _logBuffer.map(e => {
+    const ts = new Date(e.t).toISOString();
+    return "[" + ts + "] [" + e.level + "] " + e.msg + (e.data ? " " + JSON.stringify(e.data) : "");
+  });
+  const blob = new Blob([lines.join("\n") || "（無日誌）"], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = "pdf-studio-log.txt"; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+function clearDiagnosticsLog() {
+  _logBuffer.length = 0;
+  try { localStorage.removeItem(LOG_KEY); } catch { /* ok */ }
+  alert("日誌已清除。");
+}
+
+// --- Recent files ---
+function loadRecentFiles() {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch { return []; }
+}
+
+function addToRecent(fileName) {
+  if (!fileName) return;
+  let list = loadRecentFiles().filter(f => f !== fileName);
+  list.unshift(fileName);
+  if (list.length > 10) list = list.slice(0, 10);
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch { /* quota */ }
+}
+
+function renderRecent() {
+  const ul = $("recent");
+  if (!ul) return;
+  const list = loadRecentFiles();
+  if (!list.length) {
+    ul.innerHTML = "<li style='color:#888'>（無最近開啟）</li>";
+    return;
+  }
+  ul.innerHTML = list.map(f => "<li>" + f + "</li>").join("");
+  ul.querySelectorAll("li").forEach((li, i) => {
+    if (!list[i]) return;
+    li.style.cursor = "pointer";
+    li.title = list[i];
+    li.addEventListener("click", () => showToast("請直接拖曳或開啟檔案", "info"));
+  });
+}
+
+// --- Keyboard shortcut helpers ---
+function eventToCombo(e) {
+  const parts = [];
+  if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
+  if (e.altKey) parts.push("Alt");
+  if (e.shiftKey) parts.push("Shift");
+  const key = e.key;
+  if (key !== "Control" && key !== "Alt" && key !== "Shift" && key !== "Meta") {
+    parts.push(key.length === 1 ? key.toUpperCase() : key);
+  }
+  return parts.join("+");
+}
+
+function normalizeCombo(combo) {
+  if (!combo) return "";
+  return combo.split("+").map(p => p.trim()).join("+");
+}
+
+function runShortcutAction(actionId) {
+  onToolbarAction(actionId);
+}
+
+// --- Command palette ---
+let _commands = [];
 
 function buildCommands() {
-  state.commands = [
-    ["open", "開啟 PDF", "Ctrl+O"],
-    ["save", "儲存", "Ctrl+S"],
-    ["split", "開啟拆分精靈", ""],
-    ["merge", "開啟合併精靈", ""],
-    ["batch", "開啟批次精靈", ""],
-    ["convert", "開啟轉換精靈", ""],
-    ["watermark", "套用浮水印", ""],
-    ["pageNumbers", "套用頁碼", ""],
-    ["pageLabels", "設定頁面標籤", ""],
-    ["readNight", "夜間閱讀模式", ""],
-    ["toggleContrast", "切換高對比", ""],
-    ["present", "簡報模式", ""],
-    ["headerFooter", "套用頁首頁尾", ""],
-    ["metadata", "編輯中繼資料", ""],
-    ["addLink", "新增超連結", ""],
-    ["insertImage", "插入圖片", ""],
-    ["exportRegion", "匯出區域 PNG", ""],
-    ["formBuilder", "新增表單欄位", ""],
-    ["formFill", "填寫表單", ""],
-    ["formImport", "匯入表單資料", ""],
-    ["formExport", "匯出表單 JSON", ""],
-    ["formExportCsv", "匯出表單 CSV", ""],
-    ["formExportXfdf", "匯出表單 XFDF", ""],
-    ["xfaInfo", "XFA 資訊", ""],
-    ["extractImages", "提取圖片", ""],
-    ["replaceImage", "替換圖片區域", ""],
-    ["securityOps", "安全操作（CLI）", ""],
-    ["bookmarkManager", "書籤管理", ""],
-    ["compressDoc", "壓縮文件", ""],
-    ["extractPages", "提取頁面", ""],
-    ["insertFromPdf", "從 PDF 插入", ""],
-    ["printAdvanced", "列印（範圍/奇偶）", "Ctrl+P"],
-    ["copyToDoc", "複製頁面到其他文件", ""],
-    ["moveToDoc", "移動頁面到其他文件", ""],
-    ["exportLog", "匯出診斷日誌", ""],
-    ["editShortcuts", "編輯快捷鍵", ""],
-    ["rotate90", "旋轉頁面 90", ""],
-    ["rotateRange", "範圍旋轉", ""],
-    ["cropPage", "框選裁切", ""],
-    ["cropRange", "範圍裁切", ""],
-    ["setBoxes", "設定 Crop/Trim/Bleed", ""],
-    ["deletePage", "刪除目前頁", ""],
-    ["deleteRange", "刪除頁碼範圍", ""],
-    ["editAnn", "編輯已選註解", ""],
-    ["toolRect", "工具：矩形", ""],
-    ["toolEllipse", "工具：橢圓", ""],
-    ["toolLine", "工具：直線", ""],
-    ["toolArrow", "工具：箭頭", ""],
-    ["toolFreehand", "工具：手繪", ""],
-    ["toolRedact", "工具：遮蔽", ""],
-    ["applyRedact", "套用遮蔽", ""],
-    ["toolSticky", "工具：便利貼", ""],
-    ["stampReviewed", "印章：已閱", ""],
-    ["stampApproved", "印章：核准", ""],
-    ["stampUrgent", "印章：急件", ""],
-    ["stampImage", "印章：圖片", ""],
-    ["stampManager", "印章管理", ""],
-    ["crossSeal", "跨頁騎縫章", ""],
-    ["find", "搜尋文字", "Ctrl+F"],
-    ["next", "下一頁", "PageDown"],
-    ["prev", "上一頁", "PageUp"],
-  ];
+  _commands = [];
+  Object.entries(TOOLBAR).forEach(([tab, groups]) => {
+    groups.forEach(group => {
+      group.items.forEach(([id, label]) => {
+        _commands.push({ id, label, tab });
+      });
+    });
+  });
 }
 
 function openCommandPalette() {
-  state.commandIndex = 0;
-  $("q").value = "";
-  $("cmd").classList.add("show");
+  const dlg = $("cmd");
+  if (!dlg) return;
+  dlg.classList.add("show");
+  const q = $("q");
+  if (q) { q.value = ""; q.focus(); }
   renderCommandList();
-  $("q").focus();
 }
 
 function closeCommandPalette() {
-  $("cmd").classList.remove("show");
+  const dlg = $("cmd");
+  if (dlg) dlg.classList.remove("show");
 }
 
 function renderCommandList() {
-  const q = $("q").value.trim().toLowerCase();
-  const rows = state.commands.filter((c) => c[1].toLowerCase().includes(q) || c[0].includes(q));
-  const root = $("ql");
-  root.innerHTML = "";
-  rows.forEach((row, idx) => {
-    const b = document.createElement("button");
-    b.className = `qi${idx === state.commandIndex ? " on" : ""}`;
-    b.dataset.command = row[0];
-    b.innerHTML = `<span>${row[1]}</span><span class="k">${row[2]}</span>`;
-    b.addEventListener("click", () => runCommand(row[0]));
-    root.appendChild(b);
+  const ql = $("ql");
+  if (!ql) return;
+  const query = ($("q")?.value || "").toLowerCase().trim();
+  const filtered = query
+    ? _commands.filter(c => c.label.toLowerCase().includes(query) || c.id.toLowerCase().includes(query))
+    : _commands.slice(0, 20);
+  ql.innerHTML = filtered.slice(0, 30).map((c, i) =>
+    "<div class=\"qi" + (i === 0 ? " sel" : "") + "\" data-id=\"" + safeAttr(c.id) + "\">" + c.label + " <small>" + c.tab + "</small></div>"
+  ).join("");
+  ql.querySelectorAll(".qi").forEach(el => {
+    el.addEventListener("click", () => {
+      closeCommandPalette();
+      onToolbarAction(el.dataset.id);
+    });
   });
-  if (state.commandIndex >= rows.length) state.commandIndex = Math.max(0, rows.length - 1);
-  highlightCommandSelection();
-}
-
-function highlightCommandSelection() {
-  [...$("ql").querySelectorAll(".qi")].forEach((x, i) => x.classList.toggle("on", i === state.commandIndex));
 }
 
 function onCommandKeyDown(e) {
-  const items = [...$("ql").querySelectorAll(".qi")];
-  if (!items.length) return;
+  const ql = $("ql");
+  if (!ql) return;
+  const items = [...ql.querySelectorAll(".qi")];
+  const sel = ql.querySelector(".qi.sel");
+  const idx = sel ? items.indexOf(sel) : -1;
   if (e.key === "ArrowDown") {
     e.preventDefault();
-    state.commandIndex = Math.min(items.length - 1, state.commandIndex + 1);
-    highlightCommandSelection();
+    if (sel) sel.classList.remove("sel");
+    const next = items[Math.min(items.length - 1, idx + 1)];
+    if (next) { next.classList.add("sel"); next.scrollIntoView({ block: "nearest" }); }
   } else if (e.key === "ArrowUp") {
     e.preventDefault();
-    state.commandIndex = Math.max(0, state.commandIndex - 1);
-    highlightCommandSelection();
+    if (sel) sel.classList.remove("sel");
+    const prev = items[Math.max(0, idx - 1)];
+    if (prev) { prev.classList.add("sel"); prev.scrollIntoView({ block: "nearest" }); }
   } else if (e.key === "Enter") {
     e.preventDefault();
-    const cmd = items[state.commandIndex]?.dataset.command;
-    if (cmd) runCommand(cmd);
+    const active = ql.querySelector(".qi.sel");
+    if (active) { closeCommandPalette(); onToolbarAction(active.dataset.id); }
   } else if (e.key === "Escape") {
     closeCommandPalette();
   }
 }
 
-function runCommand(cmd) {
-  closeCommandPalette();
-  const map = {
-    open: () => $("file").click(),
-    save: () => savePdf(false),
-    split: () => openWizard("split"),
-    merge: () => openWizard("merge"),
-    batch: () => openWizard("batch"),
-    convert: () => openWizard("convert"),
-    watermark: () => applyAdvancedWatermarkPrompt(),
-    pageNumbers: () => applyPageNumbersPrompt(),
-    pageLabels: () => configurePageLabelsPrompt(),
-    readNight: () => {
-      state.readingMode = "night";
-      applyReadingAndA11y();
-    },
-    toggleContrast: () => {
-      state.highContrast = !state.highContrast;
-      applyReadingAndA11y();
-    },
-    present: () => togglePresentationMode(false),
-    headerFooter: () => applyHeaderFooterPrompt(),
-    metadata: () => editMetadataPrompt(),
-    addLink: () => addHyperlinkPrompt(),
-    insertImage: () => insertImagePrompt(),
-    exportRegion: () => exportImageRegionPrompt(),
-    formBuilder: () => addFormFieldPrompt(),
-    formFill: () => fillFormPrompt(),
-    formImport: () => importFormDataPrompt(),
-    formExport: () => exportFormDataJson(),
-    formExportCsv: () => exportFormDataCsv(),
-    formExportXfdf: () => exportFormDataXfdf(),
-    xfaInfo: () => showXfaInfo(),
-    extractImages: () => extractImagesPrompt(),
-    replaceImage: () => replaceImageRegionPrompt(),
-    securityOps: () => openSecurityOpsHelp(),
-    bookmarkManager: () => openBookmarkManagerPrompt(),
-    compressDoc: () => compressDocumentPrompt(),
-    extractPages: () => extractPagesPrompt(),
-    insertFromPdf: () => insertPagesFromExternalPdfPrompt(),
-    printAdvanced: () => printPdfWithOptionsPrompt(),
-    copyToDoc: () => transferPagesToOtherDocumentPrompt(false),
-    moveToDoc: () => transferPagesToOtherDocumentPrompt(true),
-    exportLog: () => exportDiagnosticsLog(),
-    editShortcuts: () => editShortcutBindings(),
-    rotate90: () => rotateCurrentPage(90),
-    rotateRange: () => rotatePagesByRangePrompt(),
-    cropPage: () => {
-      if (!state.pdfLib) return alert("Open a writable PDF first.");
-      state.activeTool = "crop";
-      renderToolbar();
-      showToast("在頁面上拖曳以框選裁切區域，確認後點「套用裁切」", "info", 3500);
-    },
-    cropRange: () => cropPagesByRangePrompt(),
-    setBoxes: () => setPageBoxesPrompt(),
-    deletePage: () => deleteCurrentPage(),
-    deleteRange: () => deletePagesByRangePrompt(),
-    editAnn: () => editSelectedAnnotation(),
-    toolRect: () => {
-      state.activeTool = "rect";
-      renderToolbar();
-    },
-    toolEllipse: () => {
-      state.activeTool = "ellipse";
-      renderToolbar();
-    },
-    toolLine: () => {
-      state.activeTool = "line";
-      renderToolbar();
-    },
-    toolArrow: () => {
-      state.activeTool = "arrow";
-      renderToolbar();
-    },
-    toolFreehand: () => {
-      state.activeTool = "freehand";
-      renderToolbar();
-    },
-    toolRedact: () => {
-      state.activeTool = "redact";
-      renderToolbar();
-    },
-    applyRedact: () => applyRedactionsToPdf(),
-    toolSticky: () => {
-      state.activeTool = "sticky";
-      renderToolbar();
-    },
-    stampReviewed: () => {
-      state.activeTool = "stampText";
-      state.stampText = "REVIEWED";
-      renderToolbar();
-    },
-    stampApproved: () => {
-      state.activeTool = "stampText";
-      state.stampText = "APPROVED";
-      renderToolbar();
-    },
-    stampUrgent: () => {
-      state.activeTool = "stampText";
-      state.stampText = "URGENT";
-      renderToolbar();
-    },
-    stampImage: () => pickStampImageAndActivate(),
-    stampManager: () => openStampManagerPrompt(),
-    crossSeal: () => applyCrossPageSealPrompt(),
-    find: () => promptFind(),
-    next: () => goToPage(state.currentPage + 1),
-    prev: () => goToPage(state.currentPage - 1),
-  };
-  map[cmd]?.();
-}
-
-function getRecent() {
-  try {
-    const arr = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
-function pushRecent(fileName) {
-  const arr = getRecent();
-  const next = [fileName, ...arr.filter((x) => x !== fileName)].slice(0, 8);
-  localStorage.setItem(RECENT_KEY, JSON.stringify(next));
-  renderRecent();
-}
-
-function renderRecent() {
-  const arr = getRecent();
-  const list = $("recent");
-  list.innerHTML = "";
-  if (!arr.length) {
-    const li = document.createElement("li");
-    li.innerHTML = "<span>沒有最近項目</span><button>清除</button>";
-    li.querySelector("button").addEventListener("click", () => {
-      localStorage.removeItem(RECENT_KEY);
-      renderRecent();
-    });
-    list.appendChild(li);
-    return;
-  }
-  arr.forEach((name) => {
-    const li = document.createElement("li");
-    const span = document.createElement("span");
-    span.textContent = name;
-    const b = document.createElement("button");
-    b.textContent = "開啟";
-    b.title = "受瀏覽器安全限制，需重新選擇檔案";
-    b.addEventListener("click", () => $("file").click());
-    li.append(span, b);
-    list.appendChild(li);
-  });
-}
-
+// --- Stamp preset management ---
 function loadStampPresets() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(STAMP_PRESET_KEY) || "[]");
-    state.stampPresets = Array.isArray(parsed) ? parsed.filter((x) => x && x.id && x.name && x.dataUrl).slice(0, 40) : [];
+    state.stampPresets = JSON.parse(localStorage.getItem(STAMP_PRESET_KEY) || "[]");
   } catch {
     state.stampPresets = [];
   }
@@ -4898,267 +4026,228 @@ function loadStampPresets() {
 }
 
 function saveStampPresets() {
-  localStorage.setItem(STAMP_PRESET_KEY, JSON.stringify(state.stampPresets || []));
-  renderStampPresetOptions();
+  try { localStorage.setItem(STAMP_PRESET_KEY, JSON.stringify(state.stampPresets || [])); } catch { /* quota */ }
 }
 
 function renderStampPresetOptions() {
   const sel = $("stampPresetSel");
   if (!sel) return;
-  sel.innerHTML = "";
-  if (!state.stampPresets.length) {
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = "No presets";
-    sel.appendChild(opt);
-    return;
-  }
-  state.stampPresets.forEach((p) => {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = p.name;
-    sel.appendChild(opt);
-  });
+  sel.innerHTML = (state.stampPresets || []).map((p, i) =>
+    "<option value=\"" + i + "\">" + safeAttr(p.name) + "</option>"
+  ).join("") || "<option value=\"\">（無預設）</option>";
 }
 
-function getSelectedStampPreset() {
-  const id = $("stampPresetSel")?.value;
-  if (!id) return null;
-  return (state.stampPresets || []).find((x) => x.id === id) || null;
+async function saveCurrentStampAsPreset() {
+  const vals = await openSettingsDialog({
+    title: "儲存印章預設",
+    submitText: "儲存",
+    fields: [{ key: "name", label: "預設名稱", type: "text", value: "我的印章" }],
+  });
+  if (!vals || !vals.name.trim()) return;
+  const preset = {
+    name: vals.name.trim(),
+    tool: state.activeTool,
+    stampText: state.stampText || "",
+    stampImageDataUrl: state.stampImageDataUrl || "",
+  };
+  state.stampPresets = state.stampPresets || [];
+  state.stampPresets.push(preset);
+  saveStampPresets();
+  renderStampPresetOptions();
+  alert("已儲存預設「" + preset.name + "」");
 }
 
 function applySelectedStampPreset() {
-  const p = getSelectedStampPreset();
-  if (!p) return alert("No stamp preset selected.");
-  state.stampImageDataUrl = p.dataUrl;
-  state.activeTool = "stampImage";
-  renderToolbar();
+  const sel = $("stampPresetSel");
+  if (!sel) return;
+  const idx = parseInt(sel.value, 10);
+  const preset = (state.stampPresets || [])[idx];
+  if (!preset) return alert("請先選取一個預設。");
+  if (preset.stampText) {
+    state.stampText = preset.stampText;
+    setActiveTool("stampText");
+  } else if (preset.stampImageDataUrl) {
+    state.stampImageDataUrl = preset.stampImageDataUrl;
+    setActiveTool("stampImage");
+  } else {
+    setActiveTool(preset.tool || "select");
+  }
+  showToast("已套用預設「" + preset.name + "」");
 }
 
-function saveCurrentStampAsPreset() {
-  if (!state.stampImageDataUrl) return alert("No current stamp image loaded.");
-  const name = (prompt("Preset name", `Stamp ${state.stampPresets.length + 1}`) || "").trim();
-  if (!name) return;
-  state.stampPresets.push({ id: genId(), name, dataUrl: state.stampImageDataUrl });
+async function deleteSelectedStampPreset() {
+  const sel = $("stampPresetSel");
+  if (!sel) return;
+  const idx = parseInt(sel.value, 10);
+  const preset = (state.stampPresets || [])[idx];
+  if (!preset) return alert("請先選取一個預設。");
+  if (!(await openConfirmDialog("確定刪除預設「" + preset.name + "」？", "刪除"))) return;
+  state.stampPresets.splice(idx, 1);
   saveStampPresets();
+  renderStampPresetOptions();
 }
 
-function deleteSelectedStampPreset() {
-  const p = getSelectedStampPreset();
-  if (!p) return;
-  if (!confirm(`Delete preset "${p.name}"?`)) return;
-  state.stampPresets = state.stampPresets.filter((x) => x.id !== p.id);
-  saveStampPresets();
-}
-
-function getRecoveryStore() {
-  try {
-    const raw = localStorage.getItem(RECOVERY_KEY) || "{}";
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function persistRecoveryForFile() {
-  if (!state.fileName) return;
-  const store = getRecoveryStore();
-  store[state.fileName] = {
-    updatedAt: Date.now(),
-    currentPage: state.currentPage,
-    annotations: state.annotations,
-    selectedAnnotationId: state.selectedAnnotationId,
-    selectedAnnotationIds: state.selectedAnnotationIds,
-    customBookmarks: state.customBookmarks,
-    selectedCustomBookmarkId: state.selectedCustomBookmarkId,
-    scale: state.scale,
-    viewMode: state.viewMode,
-    pageLabelRules: state.pageLabelRules,
-  };
-  localStorage.setItem(RECOVERY_KEY, JSON.stringify(store));
-}
-
-function maybeRestoreRecoveryForFile(fileName) {
-  const store = getRecoveryStore();
-  const rec = store[fileName];
-  if (!rec) return;
-  const ageMinutes = Math.floor((Date.now() - (rec.updatedAt || 0)) / 60000);
-  const ok = confirm(`Found auto backup for "${fileName}" (${ageMinutes} min ago). Restore?`);
-  if (!ok) return;
-  state.annotations = rec.annotations || {};
-  state.selectedAnnotationId = rec.selectedAnnotationId || null;
-  state.selectedAnnotationIds = Array.isArray(rec.selectedAnnotationIds) ? rec.selectedAnnotationIds : state.selectedAnnotationId ? [state.selectedAnnotationId] : [];
-  state.customBookmarks = Array.isArray(rec.customBookmarks) ? rec.customBookmarks : [];
-  state.selectedCustomBookmarkId = rec.selectedCustomBookmarkId || null;
-  state.currentPage = Math.max(1, Math.min(state.totalPages, rec.currentPage || 1));
-  state.scale = typeof rec.scale === "number" ? rec.scale : state.scale;
-  state.viewMode = rec.viewMode || state.viewMode;
-  state.pageLabelRules = Array.isArray(rec.pageLabelRules) ? rec.pageLabelRules : [];
-  redrawAllAnnotationLayers();
-  renderAnnotationPanel();
-  renderBookmarks();
-  refreshContextStrip();
-  goToPage(state.currentPage);
-}
-
-function startAutoBackupTimer() {
-  setInterval(() => {
-    if (!state.fileName || !state.pdfjs) return;
-    persistRecoveryForFile();
-  }, 20000);
-}
-
-function getLogEntries() {
-  try {
-    const raw = localStorage.getItem(LOG_KEY) || "[]";
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
-function pushLog(level, message, extra = null) {
-  const arr = getLogEntries();
-  arr.push({
-    ts: new Date().toISOString(),
-    level,
-    message,
-    extra,
-    file: state.fileName || null,
-    page: state.currentPage || null,
-    userAgent: navigator.userAgent,
-  });
-  if (arr.length > 500) arr.splice(0, arr.length - 500);
-  localStorage.setItem(LOG_KEY, JSON.stringify(arr));
-}
-
-function bindErrorLogging() {
-  window.addEventListener("error", (e) => {
-    pushLog("error", e.message || "window error", {
-      source: e.filename,
-      line: e.lineno,
-      col: e.colno,
-    });
-  });
-  window.addEventListener("unhandledrejection", (e) => {
-    pushLog("error", "unhandledrejection", {
-      reason: String(e.reason),
-    });
-  });
-  pushLog("info", "session-start");
-}
-
-function exportDiagnosticsLog() {
-  const payload = {
-    exportedAt: new Date().toISOString(),
-    app: "offline-pdf-studio",
-    state: {
-      fileName: state.fileName,
-      currentPage: state.currentPage,
-      totalPages: state.totalPages,
-      scale: state.scale,
-      viewMode: state.viewMode,
-      annotationCount: Object.values(state.annotations).reduce((s, a) => s + a.length, 0),
-      attachmentCount: state.attachments.length,
-    },
-    logs: getLogEntries(),
-  };
-  const bytes = new TextEncoder().encode(JSON.stringify(payload, null, 2));
-  const blob = new Blob([bytes], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `diagnostics-${Date.now()}.json`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
-function clearDiagnosticsLog() {
-  localStorage.removeItem(LOG_KEY);
-  pushLog("info", "log-cleared");
-  alert("Diagnostics log cleared.");
-}
-
-function normalizeCombo(s) {
-  if (!s) return "";
-  return String(s)
-    .split("+")
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .map((x) => (/^ctrl$/i.test(x) ? "Ctrl" : /^shift$/i.test(x) ? "Shift" : /^alt$/i.test(x) ? "Alt" : x.length === 1 ? x.toUpperCase() : x))
-    .sort((a, b) => {
-      const rank = { Ctrl: 1, Shift: 2, Alt: 3 };
-      return (rank[a] || 10) - (rank[b] || 10);
-    })
-    .join("+");
-}
-
-function eventToCombo(e) {
-  const parts = [];
-  if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
-  if (e.shiftKey) parts.push("Shift");
-  if (e.altKey) parts.push("Alt");
-  let key = e.key;
-  if (key.length === 1) key = key.toUpperCase();
-  if (key === " ") key = "Space";
-  if (["Control", "Shift", "Alt", "Meta"].includes(key)) return "";
-  parts.push(key);
-  return normalizeCombo(parts.join("+"));
-}
-
-function getShortcuts() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(SHORTCUTS_KEY) || "{}");
-    return { ...DEFAULT_SHORTCUTS, ...(parsed || {}) };
-  } catch {
-    return { ...DEFAULT_SHORTCUTS };
-  }
-}
-
-function saveShortcuts(map) {
-  localStorage.setItem(SHORTCUTS_KEY, JSON.stringify(map));
-}
-
-function runShortcutAction(action) {
-  const map = {
-    open: () => $("file").click(),
-    save: () => savePdf(false),
-    undo: () => undo(),
-    redo: () => redo(),
-    print: () => printPdfWithOptionsPrompt(),
-    find: () => promptFind(),
-    findNext: () => findNext(),
-    commandPalette: () => openCommandPalette(),
-    nextPage: () => goToPage(state.currentPage + 1),
-    prevPage: () => goToPage(state.currentPage - 1),
-    scrollTop: () => scrollViewToTop(),
-  };
-  map[action]?.();
-}
-
-function editShortcutBindings() {
-  const map = getShortcuts();
-  const actions = Object.keys(DEFAULT_SHORTCUTS);
-  const lines = actions.map((k) => `${k}: ${map[k]}`);
-  const input = prompt(
-    "Edit shortcuts. One per line: action=combo\\nExample: open=Ctrl+O\\n\\n" + lines.join("\\n"),
-    lines.map((x) => x.replace(": ", "=")).join("\n"),
+// --- Flatten annotations to PDF ---
+async function flattenAnnotationsToPdf() {
+  if (!state.pdfjs || !state.pdfLib) return alert("請先開啟可編輯的 PDF。");
+  const total = Object.values(state.annotations).flat().length;
+  if (!total) return alert("目前沒有任何註解。");
+  const ok = await openConfirmDialog(
+    "確定將 " + total + " 個註解扁平化到 PDF？（嵌入後無法以本工具再次編輯）",
+    "扁平化"
   );
-  if (input == null) return;
-  const next = { ...map };
-  input
-    .split("\n")
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .forEach((line) => {
-      const [k, v] = line.split("=").map((x) => x.trim());
-      if (!k || !v || !DEFAULT_SHORTCUTS[k]) return;
-      next[k] = normalizeCombo(v);
+  if (!ok) return;
+  for (const [pageStr, anns] of Object.entries(state.annotations)) {
+    if (!anns.length) continue;
+    const pNum = Number(pageStr);
+    const wrap = $("pages").querySelector(".pw[data-page=\"" + pNum + "\"]");
+    if (!wrap) continue;
+    const canvas = wrap.querySelector(".pc");
+    if (!canvas) continue;
+    // Capture the full rendered page (including annotation overlay via canvas merge)
+    const merged = document.createElement("canvas");
+    merged.width = canvas.width;
+    merged.height = canvas.height;
+    const mctx = merged.getContext("2d");
+    mctx.drawImage(canvas, 0, 0);
+    // Draw annotation layer canvas if present
+    const annCanvas = wrap.querySelector("canvas.ann-canvas");
+    if (annCanvas) mctx.drawImage(annCanvas, 0, 0);
+    try {
+      const dataUrl = merged.toDataURL("image/png");
+      const imgBytes = await (await fetch(dataUrl)).arrayBuffer();
+      const page = state.pdfLib.getPage(pNum - 1);
+      const s = page.getSize();
+      const img = await state.pdfLib.embedPng(imgBytes);
+      page.drawImage(img, { x: 0, y: 0, width: s.width, height: s.height });
+    } catch (err) {
+      pushLog("warn", "flattenAnnotationsToPdf page " + pNum + " failed", { err: err.message });
+    }
+  }
+  state.annotations = {};
+  await reloadFromPdfLib();
+  alert("扁平化完成。");
+}
+
+// --- Apply redaction annotations ---
+async function applyRedactionsToPdf() {
+  if (!state.pdfLib) return alert("請先開啟可編輯的 PDF。");
+  const redacts = Object.entries(state.annotations).flatMap(([p, anns]) =>
+    anns.filter(a => a.type === "rd").map(a => ({ ...a, page: Number(p) }))
+  );
+  if (!redacts.length) return alert("沒有遮蔽（紅色矩形）註解，請先用「遮蔽」工具標記要遮擋的區域。");
+  const ok = await openConfirmDialog(
+    "確定永久塗黑 " + redacts.length + " 個遮蔽區域？此操作無法復原。",
+    "套用遮蔽"
+  );
+  if (!ok) return;
+  for (const ann of redacts) {
+    try {
+      const page = state.pdfLib.getPage(ann.page - 1);
+      const s = page.getSize();
+      // ann coords are canvas pixels; estimate ratio from canvas width
+      const wrap = $("pages").querySelector(".pw[data-page=\"" + ann.page + "\"]");
+      const cv = wrap?.querySelector(".pc");
+      const cw = cv ? cv.width : s.width;
+      const ratio = s.width / cw;
+      const x = ann.x * ratio;
+      const y = s.height - (ann.y + ann.h) * ratio;
+      const w = ann.w * ratio;
+      const h = ann.h * ratio;
+      page.drawRectangle({ x, y, width: w, height: h, color: PDFLib.rgb(0, 0, 0) });
+    } catch (err) { pushLog("warn", "applyRedaction failed", { err: err.message }); }
+  }
+  // Remove the redact annotations from state
+  Object.keys(state.annotations).forEach(p => {
+    state.annotations[p] = (state.annotations[p] || []).filter(a => a.type !== "rd");
+  });
+  await reloadFromPdfLib();
+  alert("遮蔽已套用完成。");
+}
+
+// --- Form data import/export ---
+async function importFormDataPrompt() {
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = ".json,.csv";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const form = state.pdfLib.getForm();
+      if (file.name.endsWith(".json")) {
+        const data = JSON.parse(text);
+        Object.entries(data).forEach(([k, v]) => {
+          try { const f = form.getField(k); if (f.setText) f.setText(String(v)); } catch { /* skip unknown */ }
+        });
+      } else {
+        text.split("\n").forEach(line => {
+          const comma = line.indexOf(",");
+          if (comma < 1) return;
+          const k = line.slice(0, comma).trim();
+          const v = line.slice(comma + 1).trim().replace(/^"|"$/g, "");
+          try { const f = form.getField(k); if (f.setText) f.setText(v); } catch { /* skip */ }
+        });
+      }
+      await reloadFromPdfLib();
+      alert("表單資料已匯入。");
+    } catch (err) { alert("匯入失敗：" + err.message); }
+  };
+  input.click();
+}
+
+function exportFormDataJson() {
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  try {
+    const form = state.pdfLib.getForm();
+    const out = {};
+    form.getFields().forEach(f => {
+      try { out[f.getName()] = f.getText?.() ?? (f.isChecked?.() ? "true" : "false"); } catch { out[f.getName()] = ""; }
     });
-  saveShortcuts(next);
-  alert("Shortcuts updated.");
+    const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = baseName(state.fileName) + "-form.json"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (err) { alert("匯出失敗：" + err.message); }
+}
+
+function exportFormDataCsv() {
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  try {
+    const form = state.pdfLib.getForm();
+    const rows = form.getFields().map(f => {
+      let val = "";
+      try { val = f.getText?.() ?? (f.isChecked?.() ? "true" : "false"); } catch { /* ok */ }
+      return "\"" + f.getName() + "\",\"" + String(val).replace(/"/g, '""') + "\"";
+    });
+    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = baseName(state.fileName) + "-form.csv"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (err) { alert("匯出失敗：" + err.message); }
+}
+
+function exportFormDataXfdf() {
+  if (!state.pdfLib) return alert("請先開啟 PDF。");
+  try {
+    const form = state.pdfLib.getForm();
+    const fields = form.getFields().map(f => {
+      let val = "";
+      try { val = f.getText?.() ?? ""; } catch { /* ok */ }
+      const esc = val.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+      return "<field name=\"" + safeAttr(f.getName()) + "\"><value>" + esc + "</value></field>";
+    }).join("\n");
+    const xfdf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<xfdf xmlns=\"http://ns.adobe.com/xfdf/\">\n<fields>\n" + fields + "\n</fields>\n</xfdf>";
+    const blob = new Blob([xfdf], { type: "application/vnd.adobe.xfdf" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = baseName(state.fileName) + "-form.xfdf"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (err) { alert("匯出失敗：" + err.message); }
+}
+
+function showXfaInfo() {
+  alert("此 PDF 可能包含 XFA 格式表單。XFA 表單需要 Adobe Acrobat 才能完整互動。本工具支援讀取 AcroForm 欄位，不支援動態 XFA 表單渲染。");
 }
 
 init();
