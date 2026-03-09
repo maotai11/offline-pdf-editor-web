@@ -713,11 +713,51 @@ async function readAndNormalizePdfFile(file) {
   return normalizePdfBytes(bytes, file?.name || "document.pdf");
 }
 
+function pdfBytesHaveEncryption(bytes) {
+  // Scan trailer area (last 8KB) for /Encrypt entry in trailer dict
+  const tail = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(-8192));
+  return /\/Encrypt\s/.test(tail);
+}
+
+function pdfBytesHaveSignature(bytes) {
+  // /SigFlags in AcroForm indicates at least one signature field exists
+  // /ByteRange indicates a signed region is present in the file
+  const scan = (chunk) => /\/SigFlags/.test(chunk) || /\/ByteRange\s*\[/.test(chunk);
+  const head = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, 65536));
+  const tail = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(-65536));
+  return scan(head) || scan(tail);
+}
+
 async function loadPdfBytes(bytes, fileName, options = {}) {
   const opts = options || {};
   // Keep separate copies: PDF.js worker may transfer/detach the underlying buffer.
   const bytesForPdfJs = bytes.slice();
   const bytesForPdfLib = bytes.slice();
+
+  // --- P0 Security checks (only on fresh user-initiated opens, not internal reloads) ---
+  if (!opts.docState) {
+    const hasEncryption = pdfBytesHaveEncryption(bytes);
+    const hasSignature = pdfBytesHaveSignature(bytes);
+    if (hasEncryption) {
+      pushLog("warn", "開啟加密 PDF", { fileName });
+      alert(
+        "⚠️ 安全提醒：此 PDF 含有加密保護。\n\n" +
+        "本工具以「略過加密」模式開啟，儲存後加密將被移除，" +
+        "任何人均可開啟輸出的 PDF，請注意資料保護。\n\n" +
+        "如需保留加密，請在下載後使用 CLI 工具（pdf_toolkit.ps1 encrypt）重新加密。"
+      );
+    }
+    if (hasSignature) {
+      pushLog("warn", "開啟含數位簽章 PDF", { fileName });
+      alert(
+        "⚠️ 安全提醒：此 PDF 含有數位簽章。\n\n" +
+        "任何儲存操作（包含不修改內容的 Ctrl+S）都會使所有數位簽章失效，" +
+        "因為本工具採用全文重寫模式，無法保留簽章的 ByteRange 完整性。\n\n" +
+        "如需保留簽章，請不要使用本工具儲存此文件。"
+      );
+    }
+  }
+
   state.pdfjs = await pdfjsLib.getDocument({ data: bytesForPdfJs }).promise;
   state.pdfLib = null;
   state.pdfLibReadOnlyReason = "";
@@ -4164,8 +4204,14 @@ async function applyRedactionsToPdf() {
   );
   if (!redacts.length) return alert("沒有遮蔽（紅色矩形）註解，請先用「遮蔽」工具標記要遮擋的區域。");
   const ok = await openConfirmDialog(
-    "確定永久塗黑 " + redacts.length + " 個遮蔽區域？此操作無法復原。",
-    "套用遮蔽"
+    "確定永久塗黑 " + redacts.length + " 個遮蔽區域？\n\n" +
+    "⚠️ 安全限制說明：\n" +
+    "本工具的遮蔽為「視覺遮蔽」，以黑色矩形覆蓋畫面，" +
+    "但原始文字資料仍保留在 PDF Content Stream 中，" +
+    "可透過 pdftotext 等工具提取。\n\n" +
+    "如需符合法律/合規標準的安全遮蔽（Content Stream 手術），" +
+    "請使用 Adobe Acrobat Pro 的「套用遮蔽」功能。",
+    "套用視覺遮蔽"
   );
   if (!ok) return;
   for (const ann of redacts) {
