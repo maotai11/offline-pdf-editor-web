@@ -987,10 +987,13 @@ async function renderPages() {
 
       await page.render({ canvasContext: canvas.getContext("2d"), viewport: hiResViewport }).promise;
 
-      // P1-3: Render text layer for text selection (in select-tool mode via CSS)
+      // P1-3 / A2-3: Render text layer with rotation-aware viewport
+      // PDF.js viewport already accounts for page rotation — pass the same layout-pixel
+      // viewport (not hiRes) so text spans align with the CSS display size.
       try {
         const textContent = await page.getTextContent();
         textLayerDiv.innerHTML = "";
+        // Use the layout viewport (not hiRes) so text span coordinates match CSS pixels
         pdfjsLib.renderTextLayer({ textContent, container: textLayerDiv, viewport, textDivs: [] });
       } catch { /* text layer not available for this page/version */ }
 
@@ -1924,15 +1927,29 @@ async function renderThumbnails() {
     item.addEventListener("dragstart", (e) => {
       draggingFrom = p;
       e.dataTransfer?.setData("text/plain", String(p));
-      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      setTimeout(() => item.classList.add("dragging"), 0);
+    });
+    item.addEventListener("dragend", () => {
+      item.classList.remove("dragging");
     });
     item.addEventListener("dragover", (e) => {
       e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      // A2-2: 高亮目標縮圖
+      $("thumbs").querySelectorAll(".thumb").forEach((t) => t.classList.remove("drag-target"));
+      if (draggingFrom && draggingFrom !== p) item.classList.add("drag-target");
+    });
+    item.addEventListener("dragleave", () => {
+      item.classList.remove("drag-target");
     });
     item.addEventListener("drop", async () => {
-      if (!draggingFrom || draggingFrom === p) return;
-      await movePageByDrag(draggingFrom, p);
+      item.classList.remove("drag-target");
+      if (!draggingFrom || draggingFrom === p) { draggingFrom = null; return; }
+      const from = draggingFrom;
       draggingFrom = null;
+      showToast(`移動第 ${from} 頁 → 第 ${p} 頁`, "info");
+      await movePageByDrag(from, p);
     });
     list.appendChild(item);
   }
@@ -2019,7 +2036,7 @@ async function renderBookmarks() {
 
   const customHeader = document.createElement("div");
   customHeader.className = "note";
-  customHeader.textContent = "Custom bookmarks";
+  customHeader.textContent = "自訂書籤";
   root.appendChild(customHeader);
   if (!state.customBookmarks.length) {
     const empty = document.createElement("div");
@@ -4200,8 +4217,11 @@ function renderRecent() {
   ul.querySelectorAll("li").forEach((li, i) => {
     if (!list[i]) return;
     li.style.cursor = "pointer";
-    li.title = list[i];
-    li.addEventListener("click", () => showToast("請直接拖曳或開啟檔案", "info"));
+    li.title = `${list[i]}\n（因瀏覽器安全限制，無法直接重開本機路徑；點擊後請在選擇視窗中找到此檔案）`;
+    li.addEventListener("click", () => {
+      showToast(`請在開啟視窗中選取：${list[i]}`, "info", 4000);
+      $("file").click();
+    });
   });
 }
 

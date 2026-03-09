@@ -802,6 +802,16 @@ body.a11y-high-contrast .sel {
   background: #4a2828;
 }
 
+/* A2-2: 縮圖拖曳重排視覺回饋 */
+.thumb.dragging {
+  opacity: 0.4;
+  outline: 2px dashed #189df8;
+}
+.thumb.drag-target {
+  outline: 3px solid #189df8;
+  background: #1e3a55;
+}
+
 /* A1-3: Annotation resize handles */
 .resize-handle {
   position: absolute;
