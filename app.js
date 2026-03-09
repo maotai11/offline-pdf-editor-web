@@ -914,31 +914,81 @@ async function closeDocument(docId) {
 }
 
 async function renderPages() {
+  if (!state.pdfjs || state.totalPages === 0) return;
+  // P1-1: Device Pixel Ratio for sharp rendering on high-DPI screens
+  const dpr = window.devicePixelRatio || 1;
   const container = $("pages");
   container.innerHTML = "";
+
+  // Phase 1: Build all DOM placeholders using first page for size estimation.
+  // This lets the user see the page layout immediately before rendering completes.
+  const firstPage = await state.pdfjs.getPage(1);
+  const firstVp = firstPage.getViewport({ scale: state.scale });
+  const wraps = [];
   for (let p = 1; p <= state.totalPages; p += 1) {
-    const page = await state.pdfjs.getPage(p);
-    const viewport = page.getViewport({ scale: state.scale });
     const wrap = document.createElement("div");
     wrap.className = "pw";
     wrap.dataset.page = String(p);
+    wrap.style.minHeight = `${firstVp.height}px`;
 
     const canvas = document.createElement("canvas");
     canvas.className = "pc";
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+
+    // P1-3: Text selection layer (transparent overlay, pointer-events via CSS)
+    const textLayerDiv = document.createElement("div");
+    textLayerDiv.className = "textLayer";
 
     const ann = document.createElement("div");
     ann.className = "ann";
-    ann.style.width = `${canvas.width}px`;
-    ann.style.height = `${canvas.height}px`;
 
-    wrap.append(canvas, ann);
+    wrap.append(canvas, textLayerDiv, ann);
     container.appendChild(wrap);
+    wraps.push(wrap);
+  }
 
-    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-    bindPageLayer(canvas, ann, p);
-    redrawAnnotationLayer(p);
+  // Phase 2: P1-2 Batch rendering (3 pages at a time) to keep UI responsive.
+  // Sequential per-page await blocked the main thread for ~10s on 100-page PDFs.
+  const BATCH = 3;
+  for (let i = 0; i < state.totalPages; i += BATCH) {
+    const pageNums = Array.from(
+      { length: Math.min(BATCH, state.totalPages - i) },
+      (_, k) => i + k + 1
+    );
+    await Promise.all(pageNums.map(async (p) => {
+      const page = await state.pdfjs.getPage(p);
+      const viewport = page.getViewport({ scale: state.scale });
+      const hiResViewport = page.getViewport({ scale: state.scale * dpr });
+      const wrap = wraps[p - 1];
+      const canvas = wrap.querySelector(".pc");
+      const textLayerDiv = wrap.querySelector(".textLayer");
+      const ann = wrap.querySelector(".ann");
+
+      // P1-1: Canvas physical size = DPR-scaled for sharp rendering;
+      //        CSS display size = layout pixels
+      canvas.width = Math.round(hiResViewport.width);
+      canvas.height = Math.round(hiResViewport.height);
+      canvas.style.width = `${viewport.width}px`;
+      canvas.style.height = `${viewport.height}px`;
+
+      textLayerDiv.style.width = `${viewport.width}px`;
+      textLayerDiv.style.height = `${viewport.height}px`;
+      ann.style.width = `${viewport.width}px`;
+      ann.style.height = `${viewport.height}px`;
+
+      await page.render({ canvasContext: canvas.getContext("2d"), viewport: hiResViewport }).promise;
+
+      // P1-3: Render text layer for text selection (in select-tool mode via CSS)
+      try {
+        const textContent = await page.getTextContent();
+        textLayerDiv.innerHTML = "";
+        pdfjsLib.renderTextLayer({ textContent, container: textLayerDiv, viewport, textDivs: [] });
+      } catch { /* text layer not available for this page/version */ }
+
+      bindPageLayer(canvas, ann, p);
+      redrawAnnotationLayer(p);
+    }));
+    // Yield to main thread between batches so the UI stays responsive
+    await new Promise((r) => setTimeout(r, 0));
   }
 }
 
@@ -1755,20 +1805,24 @@ async function applyAttachmentsToPdf() {
 }
 
 async function renderThumbnails() {
+  const dpr = window.devicePixelRatio || 1;
   const list = $("thumbs");
   list.innerHTML = "";
   let draggingFrom = null;
   for (let p = 1; p <= state.totalPages; p += 1) {
     const page = await state.pdfjs.getPage(p);
     const viewport = page.getViewport({ scale: state.thumbScale });
+    const hiResViewport = page.getViewport({ scale: state.thumbScale * dpr });
     const item = document.createElement("div");
     item.className = `thumb${p === state.currentPage ? " active" : ""}`;
     item.dataset.page = String(p);
     item.draggable = true;
     const canvas = document.createElement("canvas");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+    canvas.width = Math.round(hiResViewport.width);
+    canvas.height = Math.round(hiResViewport.height);
+    canvas.style.width = `${viewport.width}px`;
+    canvas.style.height = `${viewport.height}px`;
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport: hiResViewport }).promise;
     const label = document.createElement("div");
     label.textContent = `Page ${getPageLabel(p)}`;
     item.append(canvas, label);
