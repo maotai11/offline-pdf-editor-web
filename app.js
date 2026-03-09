@@ -1297,6 +1297,16 @@ function distancePointToSegment(px, py, x1, y1, x2, y2) {
   return Math.hypot(px - nx, py - ny);
 }
 
+function hasCJK(text) {
+  return /[\u2E80-\u2FFF\u3000-\u303F\u3040-\u30FF\u3100-\u312F\u3200-\u32FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA48F\uF900-\uFAFF\uFE30-\uFE4F]/.test(text);
+}
+
+function warnIfCJK(text, context) {
+  if (!hasCJK(text)) return false;
+  alert(`⚠️ 注意：「${context}」包含中文字元。\n\n目前使用的 PDF 寫入引擎不支援 CJK 字型，中文字元在儲存的 PDF 中將顯示為空白。\n\n建議改用英文或數字，或使用「便利貼/文字框」工具加中文標注。`);
+  return true;
+}
+
 function hexToRgba(hex, alpha) {
   const h = String(hex || "#ffcc33").replace("#", "");
   const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
@@ -2604,7 +2614,22 @@ async function setPageBoxesPrompt() {
 
 async function reloadFromPdfLib() {
   const bytes = await state.pdfLib.save();
-  await loadPdfBytes(normalizePdfBytes(new Uint8Array(bytes), state.fileName || "document.pdf"), state.fileName || "document.pdf", { skipRecoveryPrompt: true });
+  const savedDocState = {
+    annotations: state.annotations,
+    selectedAnnotationId: state.selectedAnnotationId,
+    selectedAnnotationIds: state.selectedAnnotationIds,
+    customBookmarks: state.customBookmarks,
+    selectedCustomBookmarkId: state.selectedCustomBookmarkId,
+    attachments: state.attachments,
+    currentPage: state.currentPage,
+    scale: state.scale,
+    viewMode: state.viewMode,
+    thumbScale: state.thumbScale,
+    undoStack: state.undoStack,
+    redoStack: state.redoStack,
+    pageLabelRules: state.pageLabelRules,
+  };
+  await loadPdfBytes(normalizePdfBytes(new Uint8Array(bytes), state.fileName || "document.pdf"), state.fileName || "document.pdf", { skipRecoveryPrompt: true, docState: savedDocState });
 }
 
 async function savePdf(promptName) {
@@ -3349,7 +3374,7 @@ async function applyAdvancedWatermarkPrompt() {
     title: "浮水印設定",
     submitText: "套用浮水印",
     fields: [
-      { key: "text", label: "浮水印文字", type: "text", value: "機密文件" },
+      { key: "text", label: "浮水印文字（建議用英文或數字）", type: "text", value: "CONFIDENTIAL" },
       { key: "range", label: "頁面範圍", type: "text", value: "all", placeholder: "all / 1-3,5 / odd" },
       { key: "opacity", label: "透明度（0.05～1.0）", type: "number", value: "0.18", min: "0.05", step: "0.01" },
       { key: "angle", label: "傾斜角度（度）", type: "number", value: "35", step: "1" },
@@ -3358,6 +3383,7 @@ async function applyAdvancedWatermarkPrompt() {
   });
   if (!vals || !vals.text.trim()) return;
   const text = vals.text.trim();
+  warnIfCJK(text, "浮水印文字");
   const rangeInput = vals.range || "all";
   const opacity = Number(vals.opacity);
   const angle = Number(vals.angle);
@@ -3481,6 +3507,7 @@ async function applyHeaderFooterPrompt() {
   });
   if (!vals) return;
   const template = vals.template ?? "";
+  warnIfCJK(template, "頁首/頁尾範本");
   const rangeInput = vals.range || "all";
   const position = vals.position || "top-right";
   const size = Number(vals.size);
