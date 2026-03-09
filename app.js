@@ -1,3 +1,8 @@
+// A3-1: CJK 字型嵌入 — 使用者可載入本機 .ttf/.otf 供 drawText 使用
+// 字型位元組存在此全域變數；每次 loadPdfBytes 後需重新 embedFont
+let _cjkFontBytes = null;   // ArrayBuffer（持久，切換 PDF 不清除）
+let _cjkFont = null;        // PDFLib.PDFFont（每份文件重建）
+
 const state = {
   pdfjs: null,
   pdfLib: null,
@@ -762,6 +767,7 @@ async function loadPdfBytes(bytes, fileName, options = {}) {
   state.pdfjs = await pdfjsLib.getDocument({ data: bytesForPdfJs }).promise;
   state.pdfLib = null;
   state.pdfLibReadOnlyReason = "";
+  _cjkFont = null; // A3-1: 新文件需要重新 embed 字型
   try {
     state.pdfLib = await PDFLib.PDFDocument.load(bytesForPdfLib, { ignoreEncryption: true });
   } catch (err) {
@@ -1706,6 +1712,12 @@ function getFilteredAnnotations() {
   });
 }
 
+const ANN_TYPE_LABEL = {
+  h: "螢光標記", t: "文字注釋", r: "矩形", e: "橢圓形",
+  l: "直線", a: "箭頭", f: "自由繪圖", n: "便條貼",
+  s: "印章（文字）", si: "印章（圖片）", rd: "塗黑遮蔽",
+};
+
 function renderAnnotationPanel() {
   const all = getFilteredAnnotations();
   const root = $("anns");
@@ -1716,58 +1728,70 @@ function renderAnnotationPanel() {
   }
   root.className = "";
   root.innerHTML = "";
+
+  // Group by type, preserving page order within each group
+  const groups = {};
   all.forEach((ann) => {
-    const typeLabel =
-      ann.type === "h"
-        ? "highlight"
-        : ann.type === "t"
-          ? "text"
-          : ann.type === "r"
-            ? "rect"
-            : ann.type === "e"
-              ? "ellipse"
-              : ann.type === "l"
-                ? "line"
-                : ann.type === "a"
-                  ? "arrow"
-                  : ann.type === "f"
-                    ? "freehand"
-                    : ann.type === "n"
-                      ? "sticky"
-                      : ann.type === "s"
-                        ? "stamp"
-                        : ann.type === "si"
-                          ? "stamp-image"
-                          : ann.type === "rd"
-                            ? "redaction"
-                    : ann.type;
-    const row = document.createElement("div");
-    row.className = `thumb${state.selectedAnnotationIds.includes(ann.id) || state.selectedAnnotationId === ann.id ? " active" : ""}`;
-    row.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px">
-        <input type="checkbox" data-ann-check="${ann.id}" ${state.selectedAnnotationIds.includes(ann.id) ? "checked" : ""}>
-        <span>Page ${ann.page} - ${typeLabel}</span>
-      </div>
-      ${ann.type === "t" || ann.type === "n" || ann.type === "s" ? `<div style="font-size:11px;color:#9aabc0;margin-top:4px">${String(ann.text || "").slice(0, 80)}</div>` : ""}
-    `;
-    row.querySelector(`[data-ann-check="${ann.id}"]`).addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      if (ev.target.checked) {
-        if (!state.selectedAnnotationIds.includes(ann.id)) state.selectedAnnotationIds.push(ann.id);
-      } else {
-        state.selectedAnnotationIds = state.selectedAnnotationIds.filter((id) => id !== ann.id);
-      }
-      state.selectedAnnotationId = state.selectedAnnotationIds[0] || null;
-      renderAnnotationPanel();
-      redrawAllAnnotationLayers();
-      refreshContextStrip();
+    if (!groups[ann.type]) groups[ann.type] = [];
+    groups[ann.type].push(ann);
+  });
+
+  Object.entries(groups).forEach(([type, items]) => {
+    const label = ANN_TYPE_LABEL[type] || type;
+    // Section header (collapsible)
+    const secId = `ann-sec-${type}`;
+    const isOpen = !root.querySelector(`[data-sec="${secId}"][data-collapsed="true"]`);
+    const header = document.createElement("div");
+    header.className = "ann-group-header";
+    header.dataset.sec = secId;
+    header.dataset.collapsed = "false";
+    header.innerHTML = `<span class="ann-group-arrow">▾</span><span>${label}</span><span class="ann-group-count">${items.length}</span>`;
+    const body = document.createElement("div");
+    body.className = "ann-group-body";
+    header.addEventListener("click", () => {
+      const collapsed = header.dataset.collapsed === "true";
+      header.dataset.collapsed = collapsed ? "false" : "true";
+      header.querySelector(".ann-group-arrow").textContent = collapsed ? "▾" : "▸";
+      body.style.display = collapsed ? "" : "none";
     });
-    row.addEventListener("click", () => {
-      const wrap = $("pages").querySelector(`.pw[data-page="${ann.page}"]`);
-      if (wrap) wrap.scrollIntoView({ behavior: "smooth", block: "center" });
-      selectAnnotation(ann.id);
+    root.appendChild(header);
+    root.appendChild(body);
+
+    items.forEach((ann) => {
+      const isSelected = state.selectedAnnotationIds.includes(ann.id) || state.selectedAnnotationId === ann.id;
+      const colorDot = ann.color
+        ? `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${ann.color};border:1px solid #0003;flex-shrink:0"></span>`
+        : "";
+      const row = document.createElement("div");
+      row.className = `thumb${isSelected ? " active" : ""}`;
+      row.style.paddingLeft = "12px";
+      row.innerHTML = `
+        <div style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" data-ann-check="${ann.id}" ${state.selectedAnnotationIds.includes(ann.id) ? "checked" : ""}>
+          ${colorDot}
+          <span>第 ${ann.page} 頁</span>
+        </div>
+        ${ann.type === "t" || ann.type === "n" || ann.type === "s" ? `<div style="font-size:11px;color:#9aabc0;margin-top:4px;padding-left:22px">${String(ann.text || "").slice(0, 80)}</div>` : ""}
+      `;
+      row.querySelector(`[data-ann-check="${ann.id}"]`).addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (ev.target.checked) {
+          if (!state.selectedAnnotationIds.includes(ann.id)) state.selectedAnnotationIds.push(ann.id);
+        } else {
+          state.selectedAnnotationIds = state.selectedAnnotationIds.filter((id) => id !== ann.id);
+        }
+        state.selectedAnnotationId = state.selectedAnnotationIds[0] || null;
+        renderAnnotationPanel();
+        redrawAllAnnotationLayers();
+        refreshContextStrip();
+      });
+      row.addEventListener("click", () => {
+        const wrap = $("pages").querySelector(`.pw[data-page="${ann.page}"]`);
+        if (wrap) wrap.scrollIntoView({ behavior: "smooth", block: "center" });
+        selectAnnotation(ann.id);
+      });
+      body.appendChild(row);
     });
-    root.appendChild(row);
   });
 }
 
@@ -2267,6 +2291,42 @@ function setActiveTool(tool) {
   const pages = $("pages");
   if (pages) pages.classList.toggle("select-mode", tool === "select");
   renderToolbar();
+}
+
+// A3-1: 讓使用者選擇 .ttf/.otf 字型檔以支援 CJK 文字寫入 PDF
+async function loadCjkFontPrompt() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".ttf,.otf,.woff,.woff2";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      _cjkFontBytes = await file.arrayBuffer();
+      _cjkFont = null; // 重置，下次 getDrawFont() 時重建
+      showToast(`已載入字型：${file.name}（將用於浮水印/頁碼/頁首尾等文字寫入）`);
+      pushLog("info", "CJK 字型已載入", { name: file.name, size: _cjkFontBytes.byteLength });
+    } catch (err) {
+      alert(`字型載入失敗：${err.message}`);
+    }
+  };
+  input.click();
+}
+
+// A3-1: 取得可用的 PDF 字型（有 CJK 字型優先，否則用預設 Helvetica）
+async function getDrawFont() {
+  if (!state.pdfLib) return undefined;
+  if (_cjkFontBytes) {
+    try {
+      if (!_cjkFont) {
+        _cjkFont = await state.pdfLib.embedFont(_cjkFontBytes);
+      }
+      return _cjkFont;
+    } catch {
+      _cjkFont = null;
+    }
+  }
+  return undefined; // 讓 pdf-lib 使用預設 Helvetica
 }
 
 async function onToolbarAction(actionId) {
@@ -3641,16 +3701,19 @@ async function applyAdvancedWatermarkPrompt() {
   const fontSize = Number(vals.fontSize);
   const wPages = parseAnnotationRangeInput(rangeInput);
   if (!wPages.length) return alert("沒有有效頁面。");
+  const font = await getDrawFont(); // A3-1: 有 CJK 字型時自動注入
   wPages.forEach((pNum) => {
     const p = state.pdfLib.getPage(pNum - 1);
     const s = p.getSize();
-    p.drawText(text, {
+    const drawOpts = {
       x: s.width * 0.18,
       y: s.height * 0.48,
       size: Number.isFinite(fontSize) ? fontSize : 34,
       rotate: PDFLib.degrees(Number.isFinite(angle) ? angle : 35),
       opacity: Math.max(0.05, Math.min(1, Number.isFinite(opacity) ? opacity : 0.18)),
-    });
+    };
+    if (font) drawOpts.font = font;
+    p.drawText(text, drawOpts);
   });
   await reloadFromPdfLib();
 }
@@ -3677,6 +3740,7 @@ async function applyPageNumbersPrompt() {
   const size = Number(vals.size);
   const pnPages = parseAnnotationRangeInput(rangeInput);
   if (!pnPages.length) return alert("沒有有效頁面。");
+  const font = await getDrawFont(); // A3-1
   pnPages.forEach((pNum, idx) => {
     const page = state.pdfLib.getPage(pNum - 1);
     const s = page.getSize();
@@ -3694,7 +3758,9 @@ async function applyPageNumbersPrompt() {
       x = m;
       y = m;
     }
-    page.drawText(label, { x, y, size: Number.isFinite(size) ? size : 12 });
+    const drawOpts = { x, y, size: Number.isFinite(size) ? size : 12 };
+    if (font) drawOpts.font = font;
+    page.drawText(label, drawOpts);
   });
   await reloadFromPdfLib();
 }
@@ -3767,6 +3833,7 @@ async function applyHeaderFooterPrompt() {
 
   const total = state.totalPages;
   const dateStr = new Date().toISOString().slice(0, 10);
+  const hfFont = await getDrawFont();
   hfPages.forEach((pNum) => {
     const page = state.pdfLib.getPage(pNum - 1);
     const s = page.getSize();
@@ -3787,7 +3854,9 @@ async function applyHeaderFooterPrompt() {
       x = s.width - m * 4;
       y = m;
     }
-    page.drawText(text, { x, y, size: Number.isFinite(size) ? size : 10 });
+    const hfDrawOpts = { x, y, size: Number.isFinite(size) ? size : 10 };
+    if (hfFont) hfDrawOpts.font = hfFont;
+    page.drawText(text, hfDrawOpts);
   });
   await reloadFromPdfLib();
 }
@@ -3893,7 +3962,10 @@ async function addHyperlinkPrompt() {
       borderWidth: 1,
       opacity: 0.1,
     });
-    page.drawText(url.slice(0, 80), { x: x + 4, y: y + h / 2 - 5, size: 10 });
+    const linkFont = await getDrawFont();
+    const linkDrawOpts = { x: x + 4, y: y + h / 2 - 5, size: 10 };
+    if (linkFont) linkDrawOpts.font = linkFont;
+    page.drawText(url.slice(0, 80), linkDrawOpts);
     await reloadFromPdfLib();
   } catch (err) {
     alert(`新增連結失敗：${err.message}`);
@@ -3944,9 +4016,12 @@ async function addFormFieldPrompt() {
     if (!opts.length) return alert("沒有選項（radio）。");
     const rg = form.createRadioGroup(name);
     const eachH = Math.max(14, Math.floor(h / opts.length));
+    const radioFont = await getDrawFont();
     opts.forEach((opt, i) => {
       rg.addOptionToPage(opt, page, { x, y: y + (opts.length - 1 - i) * eachH, width: 12, height: 12 });
-      page.drawText(opt, { x: x + 18, y: y + (opts.length - 1 - i) * eachH + 1, size: 10 });
+      const radioDrawOpts = { x: x + 18, y: y + (opts.length - 1 - i) * eachH + 1, size: 10 };
+      if (radioFont) radioDrawOpts.font = radioFont;
+      page.drawText(opt, radioDrawOpts);
     });
   } else if (type === "dropdown") {
     const opts = (vals.opts || "Option1,Option2").split(",").map((o) => o.trim()).filter(Boolean);
@@ -4061,6 +4136,7 @@ async function applyBatesNumberingPrompt() {
   const bPages = parseAnnotationRangeInput(bVals.range || "all");
   if (!bPages.length) return alert("沒有有效頁面。");
   const pos = bVals.pos || "br";
+  const batesFont = await getDrawFont();
   bPages.forEach((pNum, i) => {
     const page = state.pdfLib.getPage(pNum - 1);
     const s = page.getSize();
@@ -4070,7 +4146,9 @@ async function applyBatesNumberingPrompt() {
     if (pos === "tl") { x = m; y = s.height - m; }
     else if (pos === "tr") { x = s.width - m * 4; y = s.height - m; }
     else if (pos === "bl") { x = m; y = m; }
-    page.drawText(label, { x, y, size: 9 });
+    const batesDrawOpts = { x, y, size: 9 };
+    if (batesFont) batesDrawOpts.font = batesFont;
+    page.drawText(label, batesDrawOpts);
   });
   await reloadFromPdfLib();
 }

@@ -836,3 +836,32 @@ body.a11y-high-contrast .sel {
   background: rgba(255, 200, 0, 0.55) !important;
   border-radius: 2px;
 }
+
+/* A3-2: 註解面板分組標題 */
+.ann-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--l);
+  border-radius: 4px;
+  margin: 4px 0 2px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--t);
+  user-select: none;
+}
+.ann-group-header:hover { background: #4a5d72; }
+.ann-group-arrow { font-size: 10px; color: var(--m); }
+.ann-group-count {
+  margin-left: auto;
+  background: var(--a);
+  color: #fff;
+  font-size: 10px;
+  border-radius: 10px;
+  padding: 1px 6px;
+  min-width: 20px;
+  text-align: center;
+}
+.ann-group-body { margin-bottom: 4px; }
