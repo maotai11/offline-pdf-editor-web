@@ -30,6 +30,7 @@ const state = {
   searchHits: [],
   searchHitDetails: [],
   searchCursor: -1,
+  searchKeyword: "",
   thumbScale: 0.25,
   viewMode: "continuous",
   attachments: [],
@@ -558,7 +559,7 @@ function renderToolbar() {
 
     group.items.forEach(([id, text, cls]) => {
       const btn = document.createElement("button");
-      btn.textContent = id === "zoomLabel" ? `${Math.round((state.scale / 1.25) * 100)}%` : text;
+      btn.textContent = id === "zoomLabel" ? `${Math.round(state.scale * 100)}%` : text;
       btn.className = cls || "";
       const isActiveTool = isToolbarActionActive(id);
       btn.classList.toggle("active-tool", isActiveTool);
@@ -999,6 +1000,24 @@ async function renderPages() {
     // Yield to main thread between batches so the UI stays responsive
     await new Promise((r) => setTimeout(r, 0));
   }
+
+  // A1-1: IntersectionObserver — 捲動時自動更新頁碼與縮圖高亮
+  // 斷開舊的 observer 避免多次開檔時重複監聽
+  if (window._pageScrollObserver) window._pageScrollObserver.disconnect();
+  window._pageScrollObserver = new IntersectionObserver((entries) => {
+    const visible = entries
+      .filter((e) => e.isIntersecting)
+      .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+    if (!visible.length) return;
+    const p = Number(visible[0].target.dataset.page);
+    if (!p || p === state.currentPage) return;
+    state.currentPage = p;
+    updateStatus();
+    document.querySelectorAll(".thumb[data-page]").forEach((t) =>
+      t.classList.toggle("active", Number(t.dataset.page) === p)
+    );
+  }, { root: $("view"), threshold: [0.3, 0.5, 0.7] });
+  wraps.forEach((w) => window._pageScrollObserver.observe(w));
 }
 
 function bindPageLayer(canvas, annLayer, pageNum) {
@@ -1171,6 +1190,36 @@ function bindPageLayer(canvas, annLayer, pageNum) {
   });
 }
 
+// A1-3: Bind resize handle drag behaviour to a single handle element
+function bindResizeHandle(hEl, ann, dir, pageNum, canvas) {
+  hEl.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = canvas.getBoundingClientRect();
+    const ratioX = canvas.width / rect.width;
+    const ratioY = canvas.height / rect.height;
+    const orig = { x: ann.x, y: ann.y, w: ann.w, h: ann.h };
+
+    const onMove = (mv) => {
+      const dx = (mv.clientX - e.clientX) * ratioX;
+      const dy = (mv.clientY - e.clientY) * ratioY;
+      const minSz = 6;
+      if (dir.includes("e")) { ann.w = Math.max(minSz, orig.w + dx); }
+      if (dir.includes("w")) { const nw = Math.max(minSz, orig.w - dx); ann.x = orig.x + (orig.w - nw); ann.w = nw; }
+      if (dir.includes("s")) { ann.h = Math.max(minSz, orig.h + dy); }
+      if (dir.includes("n")) { const nh = Math.max(minSz, orig.h - dy); ann.y = orig.y + (orig.h - nh); ann.h = nh; }
+      redrawAnnotationLayer(pageNum);
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      saveSnapshot();
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
 function pushAnnotation(annotation) {
   if (!state.annotations[annotation.page]) {
     state.annotations[annotation.page] = [];
@@ -1310,7 +1359,30 @@ function redrawAnnotationLayer(pageNum) {
       node.appendChild(svg);
     }
     node.dataset.id = ann.id;
-    if (state.selectedAnnotationId === ann.id || state.selectedAnnotationIds.includes(ann.id)) node.classList.add("sel");
+    const isSelected = state.selectedAnnotationId === ann.id || state.selectedAnnotationIds.includes(ann.id);
+    if (isSelected) node.classList.add("sel");
+
+    // A1-3: Resize handles — 8 方向，僅對選取的 box 類型標注顯示
+    const isBoxType = ["h", "rd", "r", "e", "n", "s", "si"].includes(ann.type);
+    if (isSelected && isBoxType && state.activeTool === "select") {
+      const HANDLE_DEFS = [
+        ["nw", 0, 0], ["n", 0.5, 0], ["ne", 1, 0],
+        ["e", 1, 0.5],
+        ["se", 1, 1], ["s", 0.5, 1], ["sw", 0, 1],
+        ["w", 0, 0.5],
+      ];
+      HANDLE_DEFS.forEach(([dir, fx, fy]) => {
+        const hEl = document.createElement("div");
+        hEl.className = "resize-handle";
+        hEl.dataset.dir = dir;
+        Object.assign(hEl.style, {
+          left: `${ann.x + fx * ann.w - 5}px`,
+          top:  `${ann.y + fy * ann.h - 5}px`,
+        });
+        bindResizeHandle(hEl, ann, dir, pageNum, canvas);
+        layer.appendChild(hEl);
+      });
+    }
 
     // Drag-to-move: only active when select tool is used
     node.addEventListener("mousedown", (e) => {
@@ -1636,7 +1708,7 @@ function renderAnnotationPanel() {
   const root = $("anns");
   if (!all.length) {
     root.className = "note";
-    root.textContent = "No annotations (current filter)";
+    root.textContent = "沒有符合條件的註解";
     return;
   }
   root.className = "";
@@ -1779,7 +1851,7 @@ function renderAttachmentPanel() {
   if (!root) return;
   if (!state.attachments.length) {
     root.className = "note";
-    root.textContent = "No attachments";
+    root.textContent = "沒有附件";
     return;
   }
   root.className = "";
@@ -1846,7 +1918,7 @@ async function renderThumbnails() {
     canvas.style.height = `${viewport.height}px`;
     await page.render({ canvasContext: canvas.getContext("2d"), viewport: hiResViewport }).promise;
     const label = document.createElement("div");
-    label.textContent = `Page ${getPageLabel(p)}`;
+    label.textContent = `第 ${getPageLabel(p)} 頁`;
     item.append(canvas, label);
     item.addEventListener("click", () => goToPage(p));
     item.addEventListener("dragstart", (e) => {
@@ -2006,7 +2078,7 @@ async function renderBookmarks() {
   const pdfHeader = document.createElement("div");
   pdfHeader.className = "note";
   pdfHeader.style.marginTop = "8px";
-  pdfHeader.textContent = "PDF outline";
+  pdfHeader.textContent = "PDF 內建大綱";
   root.appendChild(pdfHeader);
 
   try {
@@ -2014,7 +2086,7 @@ async function renderBookmarks() {
     if (!outline?.length) {
       const empty = document.createElement("div");
       empty.className = "thumb";
-      empty.textContent = "No embedded outline";
+      empty.textContent = "無內建大綱";
       root.appendChild(empty);
       return;
     }
@@ -2040,7 +2112,7 @@ async function renderBookmarks() {
   } catch {
     const err = document.createElement("div");
     err.className = "thumb";
-    err.textContent = "Outline render failed";
+    err.textContent = "大綱載入失敗";
     root.appendChild(err);
   }
 }
@@ -2170,7 +2242,7 @@ function updateStatus() {
   const annCount = Object.values(state.annotations).reduce((sum, arr) => sum + arr.length, 0);
   const ro = state.pdfLib ? "" : " | 唯讀";
   const label = getPageLabel(state.currentPage);
-  $("st").textContent = `${state.fileName} | 第 ${label} 頁 (${state.currentPage}/${state.totalPages}) | 縮放 ${Math.round((state.scale / 1.25) * 100)}% | 註解 ${annCount}${ro}`;
+  $("st").textContent = `${state.fileName} | 第 ${label} 頁 (${state.currentPage}/${state.totalPages}) | 縮放 ${Math.round(state.scale * 100)}% | 註解 ${annCount}${ro}`;
 }
 
 function setActiveTool(tool) {
@@ -3323,6 +3395,24 @@ async function promptFind() {
   searchAll(fVals.q.trim());
 }
 
+// A1-5: 在文字層高亮搜尋命中字串
+function highlightSearchInTextLayer(pageNum, keyword) {
+  const wrap = $("pages")?.querySelector(`.pw[data-page="${pageNum}"]`);
+  if (!wrap) return;
+  const kw = (keyword || "").toLowerCase();
+  wrap.querySelectorAll(".textLayer span").forEach((span) => {
+    if (kw && span.textContent.toLowerCase().includes(kw)) {
+      span.classList.add("search-hit");
+    } else {
+      span.classList.remove("search-hit");
+    }
+  });
+}
+
+function clearAllSearchHighlights() {
+  document.querySelectorAll(".textLayer span.search-hit").forEach((s) => s.classList.remove("search-hit"));
+}
+
 async function searchAll(query) {
   state.searchHits = [];
   state.searchHitDetails = [];
@@ -3342,20 +3432,25 @@ async function searchAll(query) {
     }
   }
   if (!state.searchHits.length) {
+    clearAllSearchHighlights();
     renderSearchHitPanel();
     alert("沒有符合結果");
     return;
   }
   state.searchCursor = 0;
+  state.searchKeyword = query;
   renderSearchHitPanel();
   goToPage(state.searchHits[0]);
+  highlightSearchInTextLayer(state.searchHits[0], query);
   alert(`在 ${state.searchHits.length} 頁找到符合結果，按 Ctrl+G 前往下一個。`);
 }
 
 function findNext() {
   if (!state.searchHits.length) return;
   state.searchCursor = (state.searchCursor + 1) % state.searchHits.length;
-  goToPage(state.searchHits[state.searchCursor]);
+  const p = state.searchHits[state.searchCursor];
+  goToPage(p);
+  highlightSearchInTextLayer(p, state.searchKeyword || "");
   renderSearchHitPanel();
 }
 
@@ -3364,7 +3459,7 @@ function renderSearchHitPanel() {
   if (!root) return;
   if (!state.searchHitDetails.length) {
     root.className = "note";
-    root.textContent = "No search results";
+    root.textContent = "沒有搜尋結果";
     return;
   }
   root.className = "";
@@ -3372,7 +3467,7 @@ function renderSearchHitPanel() {
   state.searchHitDetails.forEach((h, idx) => {
     const row = document.createElement("div");
     row.className = `thumb${idx === state.searchCursor ? " active" : ""}`;
-    row.innerHTML = `<div style="text-align:left">Page ${h.page}</div><div style="font-size:11px;color:#9aabc0;text-align:left;margin-top:4px">${h.snippet.replace(/</g, "&lt;")}</div>`;
+    row.innerHTML = `<div style="text-align:left">第 ${h.page} 頁</div><div style="font-size:11px;color:#9aabc0;text-align:left;margin-top:4px">${h.snippet.replace(/</g, "&lt;")}</div>`;
     row.addEventListener("click", () => {
       state.searchCursor = idx;
       goToPage(h.page);
@@ -4298,9 +4393,38 @@ async function flattenAnnotationsToPdf() {
     merged.height = canvas.height;
     const mctx = merged.getContext("2d");
     mctx.drawImage(canvas, 0, 0);
-    // Draw annotation layer canvas if present
-    const annCanvas = wrap.querySelector("canvas.ann-canvas");
-    if (annCanvas) mctx.drawImage(annCanvas, 0, 0);
+
+    // A1-6: 合成 ann layer（含 SVG 直線/箭頭/手繪）到 canvas
+    // 將 .ann div 內所有 SVG 包進 foreignObject 轉成 blob 再 drawImage
+    const annLayer = wrap.querySelector(".ann");
+    if (annLayer) {
+      try {
+        // 建立包裹 SVG，尺寸對齊 canvas
+        const svgNS = "http://www.w3.org/2000/svg";
+        const outerSvg = document.createElementNS(svgNS, "svg");
+        outerSvg.setAttribute("width", String(canvas.width));
+        outerSvg.setAttribute("height", String(canvas.height));
+        outerSvg.setAttribute("xmlns", svgNS);
+        // 複製 annLayer 中所有 SVG 子元素
+        annLayer.querySelectorAll("svg").forEach((s) => {
+          const clone = s.cloneNode(true);
+          // 強制寬高填滿 canvas
+          clone.setAttribute("width", String(canvas.width));
+          clone.setAttribute("height", String(canvas.height));
+          outerSvg.appendChild(clone);
+        });
+        const svgStr = new XMLSerializer().serializeToString(outerSvg);
+        const svgBlob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+        const svgUrl = URL.createObjectURL(svgBlob);
+        await new Promise((res) => {
+          const img = new Image();
+          img.onload = () => { mctx.drawImage(img, 0, 0); URL.revokeObjectURL(svgUrl); res(); };
+          img.onerror = () => { URL.revokeObjectURL(svgUrl); res(); };
+          img.src = svgUrl;
+        });
+      } catch { /* SVG 合成失敗時繼續，至少有 canvas 內容 */ }
+    }
+
     try {
       const dataUrl = merged.toDataURL("image/png");
       const imgBytes = await (await fetch(dataUrl)).arrayBuffer();

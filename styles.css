@@ -801,3 +801,28 @@ body.a11y-high-contrast .sel {
 .crop-cancel-btn:hover {
   background: #4a2828;
 }
+
+/* A1-3: Annotation resize handles */
+.resize-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #189df8;
+  border-radius: 3px;
+  background: #fff;
+  z-index: 30;
+  cursor: nwse-resize;
+  pointer-events: auto;
+}
+.resize-handle[data-dir="n"],
+.resize-handle[data-dir="s"] { cursor: ns-resize; }
+.resize-handle[data-dir="e"],
+.resize-handle[data-dir="w"] { cursor: ew-resize; }
+.resize-handle[data-dir="ne"],
+.resize-handle[data-dir="sw"] { cursor: nesw-resize; }
+
+/* A1-5: Search hit highlight in text layer */
+.textLayer span.search-hit {
+  background: rgba(255, 200, 0, 0.55) !important;
+  border-radius: 2px;
+}
