@@ -91,15 +91,65 @@ powershell -ExecutionPolicy Bypass -File .\cli\pdf_toolkit.ps1 -Action pdf2text 
 
 ## 5. 已知限制
 
-### 中文字元無法寫入 PDF
+### 中文字元寫入 PDF（需手動載入字型）
 
-**影響功能：** 浮水印、頁碼、頁首頁尾、新增表單欄位標籤
+**影響功能：** 浮水印、頁碼、頁首頁尾、連結標籤、表單 radio 選項
 
-**現象：** 在上述功能輸入中文，畫面預覽正常，但**下載的 PDF 用其他閱讀器（Acrobat、系統預設）開啟後，中文字元消失或顯示空白**。
+**背景說明：** PDF 寫入函式庫的內建字型（Helvetica/Times 等）均不支援 CJK 字元。若不載入字型，中文字元在寫入 PDF 時會被靜默略過。
 
-**原因：** 目前使用的 PDF 寫入函式庫預設字型（Helvetica）不支援 CJK 字元，中文字元在寫入 PDF 時被靜默略過。
+**解決方法：**
+1. 在工具列選單點選 **「載入 CJK 字型…」**（或命令面板輸入「字型」）
+2. 選取本機的 `.ttf` / `.otf` 字型檔（例如 `NotoSansCJK-Regular.ttf`、`kaiu.ttf`）
+3. 字型載入後，浮水印/頁碼/頁首尾/Bates 等功能的文字寫入將自動使用此字型
 
-**目前建議：** 上述功能請使用英文、數字或符號。中文標注請改用「便利貼」或「文字框」工具（這些是 Canvas 覆蓋層，不經過 PDF 寫入引擎）。
+**字型取得方式（免費）：**
+- [Noto Sans CJK](https://fonts.google.com/noto/specimen/Noto+Sans+TC)：Google 提供，支援繁體中文
+- Windows 內建：`C:\Windows\Fonts\kaiu.ttf`（標楷體）、`msjh.ttc`（微軟正黑）
+
+> **注意：** 字型僅存於記憶體中，重新整理後需重新載入。Canvas 標注（文字框、便利貼）本來就支援中文，不受此限制影響。
+
+---
+
+### Tagged PDF / PDF/UA 無障礙支援（A4-1）
+
+**現況：** 本工具**不支援**產生 Tagged PDF（ISO 32000 / PDF/UA-1 ISO 14289）。
+
+| 功能 | 支援狀態 |
+|------|---------|
+| 閱讀 Tagged PDF 標籤 | ❌ 不支援（顯示仍正常） |
+| 寫入 `/StructTreeRoot`、`/MarkInfo` | ❌ pdf-lib 未實作 |
+| 輔助技術（VoiceOver / NVDA）語意朗讀 | ❌ 輸出結構為非標記 PDF |
+| Acrobat Preflight「PDF/UA-1」合規 | ❌ 必然不合格 |
+| Canvas 標注的文字可被選取 / 截取 | ⚠️ 受限（文字層與繪圖層分離） |
+
+**適用場景建議：**
+- 若文件需通過 PDF/UA 或無障礙審查，請以本工具完成視覺編輯後，再透過 **Adobe Acrobat Pro「閱讀順序」工具** 或 **PAC 3 驗證器** 補充無障礙標記。
+- 本工具定位為視覺編輯與批次處理輔助工具，無法取代完整的 Tagged PDF 工作流程。
+
+---
+
+### Preflight 相容性說明（A4-2）
+
+以下列出本工具輸出 PDF 在常見 Preflight 規範下的預期結果：
+
+| 規範 | 輸出結果 | 說明 |
+|------|---------|------|
+| **PDF/A-1b** | ⚠️ 通常不合格 | 缺乏 XMP 中繼資料 `/OutputIntents`、色彩描述檔 |
+| **PDF/A-2b** | ⚠️ 通常不合格 | 同上，且 pdf-lib 不寫入 sRGB 輸出意圖 |
+| **PDF/UA-1** | ❌ 不合格 | 無標記結構（見上方說明） |
+| **PDF/X-1a** | ❌ 不合格 | 缺 `/TrimBox`、CMYK 色彩空間、輸出意圖 |
+| **ISO 32000-1（一般 PDF）** | ✅ 基本合格 | 結構合法、字型嵌入（載入字型時）、XRef 正確 |
+| **Acrobat Preflight「列印品質」** | ✅ 通常通過 | 視內容而定，無出血/裁切設定 |
+
+**Preflight 修復建議：**
+1. 若需 PDF/A，請在 Acrobat Pro 使用「另存為其他 → PDF/A」，或使用 Ghostscript：
+   ```bash
+   gs -dPDFA=2 -dBATCH -dNOPAUSE -sColorConversionStrategy=sRGB \
+      -sDEVICE=pdfwrite -dPDFACompatibilityPolicy=1 \
+      -sOutputFile=out_pdfa.pdf input.pdf
+   ```
+2. 連結標注已依 ISO 32000 設定 `/F=4`（列印旗標）與 `/P`（頁面參照），符合 Acrobat 連結標注基本規範。
+3. Canvas 標注在扁平化（Ctrl+S 儲存）後轉為頁面內容串流，不含額外 `/Annot` 結構，對 Preflight 透明。
 
 ---
 
