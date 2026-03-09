@@ -3759,6 +3759,9 @@ async function addHyperlinkPrompt() {
       Subtype: PDFName.of("Link"),
       Rect: ctx.obj([x, y, x + w, y + h]),
       Border: ctx.obj([0, 0, 1]),
+      // P3-1: ISO 32000 compliance — /F (flags=4 = print) and /P (page reference)
+      F: PDFLib.PDFNumber.of(4),
+      P: page.ref,
       A: actionRef,
     });
     const linkRef = ctx.register(link);
@@ -3794,7 +3797,7 @@ async function addFormFieldPrompt() {
       { key: "type", label: "欄位類型", type: "select", value: "text", options: [
         { value: "text", label: "文字框" }, { value: "checkbox", label: "勾選框" },
         { value: "radio", label: "單選（radio）" }, { value: "dropdown", label: "下拉選單" },
-        { value: "signature", label: "簽名欄" },
+        { value: "signature", label: "簽名佔位框（視覺用途，非數位簽章）" },
       ]},
       { key: "name", label: "欄位名稱", type: "text", value: `field_${Date.now()}` },
       { key: "opts", label: "選項（radio/下拉，逗號分隔）", type: "text", value: "A,B,C" },
@@ -3844,7 +3847,8 @@ async function addFormFieldPrompt() {
     const tf = form.createTextField(name);
     tf.setText("");
     tf.addToPage(page, { x, y, width: w, height: h });
-    page.drawText("Sign here", { x: x + 4, y: y + h / 2 - 4, size: 9, color: PDFLib.rgb(0.35, 0.35, 0.35) });
+    // P3-2: Clarify this is a visual placeholder, not a cryptographic digital signature field
+    page.drawText("[ 簽名區域 ]", { x: x + 4, y: y + h / 2 - 4, size: 9, color: PDFLib.rgb(0.35, 0.35, 0.35) });
   } else {
     const tf = form.createTextField(name);
     tf.setText("");
@@ -4046,7 +4050,12 @@ const _logBuffer = [];
 function pushLog(level, msg, data) {
   _logBuffer.push({ t: Date.now(), level, msg, data: data ?? null });
   if (_logBuffer.length > 500) _logBuffer.shift();
-  try { localStorage.setItem(LOG_KEY, JSON.stringify(_logBuffer.slice(-200))); } catch { /* quota */ }
+  try {
+    localStorage.setItem(LOG_KEY, JSON.stringify(_logBuffer.slice(-200)));
+  } catch {
+    // localStorage 已滿：縮減至最後 50 筆再試一次，失敗即放棄（log 為非關鍵資料）
+    try { localStorage.setItem(LOG_KEY, JSON.stringify(_logBuffer.slice(-50))); } catch { /* 完全放棄，不影響主功能 */ }
+  }
 }
 
 function bindErrorLogging() {
