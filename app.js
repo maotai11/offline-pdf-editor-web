@@ -941,6 +941,10 @@ async function renderPages() {
     const ann = document.createElement("div");
     ann.className = "ann";
 
+    // Store page's PDF point dimensions for coordinate conversion at annotation time
+    // These are set after getPage in Phase 2; use 0 as placeholder until then
+    wrap.dataset.pdfPtW = "0";
+    wrap.dataset.pdfPtH = "0";
     wrap.append(canvas, textLayerDiv, ann);
     container.appendChild(wrap);
     wraps.push(wrap);
@@ -969,6 +973,11 @@ async function renderPages() {
       canvas.height = Math.round(hiResViewport.height);
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
+
+      // P2-1: Store page PDF point dimensions for redaction coordinate conversion
+      const pageView = page.view; // [x, y, width, height] in PDF points
+      wrap.dataset.pdfPtW = String(pageView[2]);
+      wrap.dataset.pdfPtH = String(pageView[3]);
 
       textLayerDiv.style.width = `${viewport.width}px`;
       textLayerDiv.style.height = `${viewport.height}px`;
@@ -1088,7 +1097,20 @@ function bindPageLayer(canvas, annLayer, pageNum) {
     if (state.activeTool === "highlight") {
       pushAnnotation({ id: genId(), page: pageNum, type: "h", x, y, w, h, color: hexToRgba(color, 0.35) });
     } else if (state.activeTool === "redact") {
-      pushAnnotation({ id: genId(), page: pageNum, type: "rd", x, y, w, h, color: "rgba(0,0,0,0.82)" });
+      // P2-1: Store PDF point coordinates at annotation creation for reliable coordinate conversion
+      const wrapEl = canvas.parentElement;
+      const pdfPtW = Number(wrapEl?.dataset?.pdfPtW) || 0;
+      const pdfPtH = Number(wrapEl?.dataset?.pdfPtH) || 0;
+      const pdfAnn = { id: genId(), page: pageNum, type: "rd", x, y, w, h, color: "rgba(0,0,0,0.82)" };
+      if (pdfPtW > 0 && canvas.width > 0) {
+        const rX = pdfPtW / canvas.width;
+        const rY = pdfPtH / canvas.height;
+        pdfAnn.pdfX = x * rX;
+        pdfAnn.pdfW = w * rX;
+        pdfAnn.pdfH = h * rY;
+        pdfAnn.pdfY = pdfPtH - (y + h) * rY;
+      }
+      pushAnnotation(pdfAnn);
     } else if (state.activeTool === "rect") {
       pushAnnotation({ id: genId(), page: pageNum, type: "r", x, y, w, h, color, width });
     } else if (state.activeTool === "ellipse") {
@@ -3240,6 +3262,7 @@ async function applyCrossPageSealPrompt() {
           const src = String(r.result || "");
           const img = await loadImageElement(src);
           const pages = idx.map((i) => i + 1);
+          const pdfEmbedPromises = [];
           for (let i = 0; i < pages.length; i += 1) {
             const p = pages[i];
             const slice = sliceImageVertical(img, i, pages.length);
@@ -3252,7 +3275,29 @@ async function applyCrossPageSealPrompt() {
             const x = canvas.width - targetW - 8;
             const y = Math.max(6, Math.floor((canvas.height - targetH) / 2));
             pushAnnotation({ id: genId(), page: p, type: "si", x, y, w: targetW, h: targetH, src: slice });
+            // P2-3: Also embed into pdf-lib so the seal is permanent in the saved PDF
+            if (state.pdfLib) {
+              pdfEmbedPromises.push((async () => {
+                try {
+                  const imgBytes = await (await fetch(slice)).arrayBuffer();
+                  const pdfImg = await state.pdfLib.embedPng(imgBytes);
+                  const pdfPage = state.pdfLib.getPage(p - 1);
+                  const ps = pdfPage.getSize();
+                  const rX = ps.width / canvas.width;
+                  const rY = ps.height / canvas.height;
+                  pdfPage.drawImage(pdfImg, {
+                    x: x * rX,
+                    y: ps.height - (y + targetH) * rY,
+                    width: targetW * rX,
+                    height: targetH * rY,
+                  });
+                } catch (embedErr) {
+                  pushLog("warn", "crossPageSeal PDF embed failed p" + p, { err: embedErr.message });
+                }
+              })());
+            }
           }
+          await Promise.all(pdfEmbedPromises);
           redrawAllAnnotationLayers();
           saveSnapshot();
         } catch (err2) {
@@ -3921,7 +3966,7 @@ function getRecoveryStore() {
 function persistRecoveryForFile() {
   if (!state.fileName || !state.pdfjs) return;
   try {
-    const store = getRecoveryStore();
+    let store = getRecoveryStore();
     store[state.fileName] = {
       fileName: state.fileName,
       annotations: state.annotations,
@@ -3929,8 +3974,21 @@ function persistRecoveryForFile() {
       pageLabelRules: state.pageLabelRules,
       updatedAt: Date.now(),
     };
-    localStorage.setItem(RECOVERY_KEY, JSON.stringify(store));
-  } catch { /* quota exceeded or private mode */ }
+    // P2-4: LRU eviction — keep only the 10 most recently updated files
+    const entries = Object.entries(store).sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0));
+    if (entries.length > 10) store = Object.fromEntries(entries.slice(0, 10));
+    let json = JSON.stringify(store);
+    // Size guard: if still > 3 MB after LRU eviction, keep only the 3 most recent
+    if (json.length > 3_000_000) {
+      store = Object.fromEntries(entries.slice(0, 3));
+      json = JSON.stringify(store);
+    }
+    localStorage.setItem(RECOVERY_KEY, json);
+  } catch (e) {
+    // P2-4: Notify user instead of silently dropping backup
+    pushLog("error", "自動備份失敗（儲存空間不足）", { err: String(e) });
+    showToast("⚠️ 自動備份失敗：瀏覽器儲存空間已滿，請手動 Ctrl+S 儲存檔案。");
+  }
 }
 
 async function maybeRestoreRecoveryForFile(fileName) {
@@ -4239,6 +4297,10 @@ async function flattenAnnotationsToPdf() {
       const imgBytes = await (await fetch(dataUrl)).arrayBuffer();
       const page = state.pdfLib.getPage(pNum - 1);
       const s = page.getSize();
+      // P2-2: Clear existing content stream before drawing overlay image,
+      // so the flattened page contains only the composite image (no dual-layer issue).
+      // pdf-lib will create a fresh content stream when drawImage appends operators.
+      try { page.node.delete(PDFLib.PDFName.of("Contents")); } catch { /* ok if missing */ }
       const img = await state.pdfLib.embedPng(imgBytes);
       page.drawImage(img, { x: 0, y: 0, width: s.width, height: s.height });
     } catch (err) {
@@ -4272,15 +4334,29 @@ async function applyRedactionsToPdf() {
     try {
       const page = state.pdfLib.getPage(ann.page - 1);
       const s = page.getSize();
-      // ann coords are canvas pixels; estimate ratio from canvas width
-      const wrap = $("pages").querySelector(".pw[data-page=\"" + ann.page + "\"]");
-      const cv = wrap?.querySelector(".pc");
-      const cw = cv ? cv.width : s.width;
-      const ratio = s.width / cw;
-      const x = ann.x * ratio;
-      const y = s.height - (ann.y + ann.h) * ratio;
-      const w = ann.w * ratio;
-      const h = ann.h * ratio;
+      let x, y, w, h;
+      if (ann.pdfX != null) {
+        // P2-1: Use pre-computed PDF point coordinates (stored at annotation creation)
+        x = ann.pdfX;
+        y = ann.pdfY;
+        w = ann.pdfW;
+        h = ann.pdfH;
+      } else {
+        // Fallback: convert from canvas pixels using current rendered canvas size
+        const wrap = $("pages").querySelector(".pw[data-page=\"" + ann.page + "\"]");
+        const cv = wrap?.querySelector(".pc");
+        // Prefer dataset PDF dimensions (set during renderPages); fall back to canvas ratio
+        const pdfPtW = Number(wrap?.dataset?.pdfPtW) || 0;
+        const pdfPtH = Number(wrap?.dataset?.pdfPtH) || 0;
+        const cw = cv ? cv.width : s.width;
+        const ch = cv ? cv.height : s.height;
+        const rX = pdfPtW > 0 ? pdfPtW / cw : s.width / cw;
+        const rY = pdfPtH > 0 ? pdfPtH / ch : s.height / ch;
+        x = ann.x * rX;
+        w = ann.w * rX;
+        h = ann.h * rY;
+        y = (pdfPtH > 0 ? pdfPtH : s.height) - (ann.y + ann.h) * rY;
+      }
       page.drawRectangle({ x, y, width: w, height: h, color: PDFLib.rgb(0, 0, 0) });
     } catch (err) { pushLog("warn", "applyRedaction failed", { err: err.message }); }
   }
